@@ -6,7 +6,7 @@ import Foundation
 // MARK: - Aspect presets
 
 enum EditorAspect: String, CaseIterable, Identifiable {
-    case free, original, square, r4x5, r3x2, r4x3, r16x9, r9x16
+    case free, original, square, r4x3, r3x2, r16x9
 
     var id: String { rawValue }
 
@@ -14,14 +14,15 @@ enum EditorAspect: String, CaseIterable, Identifiable {
         switch self {
         case .free: "Free"
         case .original: "Original"
-        case .square: "1:1"
-        case .r4x5: "4:5"
-        case .r3x2: "3:2"
+        case .square: "Square"
         case .r4x3: "4:3"
+        case .r3x2: "3:2"
         case .r16x9: "16:9"
-        case .r9x16: "9:16"
         }
     }
+
+    /// Ratios that can be flipped between landscape and portrait.
+    var canSwap: Bool { [.r4x3, .r3x2, .r16x9].contains(self) }
 
     /// Width / height in pixels, or nil for a free crop.
     func pixelRatio(baseSize: CGSize, swapped: Bool) -> CGFloat? {
@@ -30,13 +31,69 @@ enum EditorAspect: String, CaseIterable, Identifiable {
         case .free: return nil
         case .original: ratio = baseSize.height > 0 ? baseSize.width / baseSize.height : 1
         case .square: ratio = 1
-        case .r4x5: ratio = 4.0 / 5.0
-        case .r3x2: ratio = 3.0 / 2.0
         case .r4x3: ratio = 4.0 / 3.0
+        case .r3x2: ratio = 3.0 / 2.0
         case .r16x9: ratio = 16.0 / 9.0
-        case .r9x16: ratio = 9.0 / 16.0
         }
         return swapped ? 1 / ratio : ratio
+    }
+}
+
+// MARK: - Resize presets
+
+/// How the result is scaled, relative to the (cropped) image.
+enum EditorResize: Equatable {
+    case original
+    case percent(Int)
+    /// Fit the longest edge within this many pixels (never upscales).
+    case longEdge(Int)
+    /// Exact size; with `locked`, the height follows the width and the crop's aspect.
+    case custom(width: Int, height: Int, locked: Bool)
+
+    static let presets: [EditorResize] = [.original, .percent(25), .percent(50), .percent(75), .longEdge(1080), .longEdge(2048)]
+
+    var title: String {
+        switch self {
+        case .original: "Original"
+        case let .percent(p): "\(p)%"
+        case let .longEdge(n): "\(n) px"
+        case .custom: "Custom"
+        }
+    }
+
+    var isCustom: Bool { if case .custom = self { true } else { false } }
+
+    /// Output size for an image of `cropped` pixels, or nil to keep it.
+    func outputSize(for cropped: CGSize) -> CGSize? {
+        guard cropped.width > 0, cropped.height > 0 else { return nil }
+        switch self {
+        case .original:
+            return nil
+        case let .percent(p):
+            let s = CGFloat(p) / 100
+            return CGSize(width: max(1, (cropped.width * s).rounded()), height: max(1, (cropped.height * s).rounded()))
+        case let .longEdge(n):
+            let longest = max(cropped.width, cropped.height)
+            guard CGFloat(n) < longest else { return nil }
+            let s = CGFloat(n) / longest
+            return CGSize(width: max(1, (cropped.width * s).rounded()), height: max(1, (cropped.height * s).rounded()))
+        case let .custom(width, height, locked):
+            let w = CGFloat(max(1, width))
+            let h = locked ? max(1, (w * cropped.height / cropped.width).rounded()) : CGFloat(max(1, height))
+            return CGSize(width: w, height: h)
+        }
+    }
+
+    /// Whether the preset changes anything for an image of `cropped` pixels (long-edge presets don't upscale).
+    func applies(to cropped: CGSize) -> Bool {
+        if case let .longEdge(n) = self { return CGFloat(n) < max(cropped.width, cropped.height) }
+        return true
+    }
+
+    /// The same request after the image turns 90°.
+    var rotated: EditorResize {
+        if case let .custom(width, height, locked) = self { return .custom(width: height, height: width, locked: locked) }
+        return self
     }
 }
 
@@ -147,8 +204,6 @@ enum EditorCropMath {
         }
     }
 
-    // MARK: Geometry changes
-
     /// Where a crop rect lands after the displayed image rotates 90°.
     static func rotated(_ rect: CGRect, clockwise: Bool) -> CGRect {
         clockwise
@@ -177,7 +232,7 @@ enum EditorCropMath {
 
 // MARK: - Canvas layout (view coordinates, bottom-left origin like AppKit)
 
-struct EditorCanvasLayout {
+enum EditorCanvasLayout {
     /// The rect the image occupies for a given zoom (1 = fit) and pan offset.
     static func imageFrame(imageSize: CGSize, bounds: CGRect, padding: CGFloat, zoom: CGFloat, pan: CGSize) -> CGRect {
         guard imageSize.width > 0, imageSize.height > 0 else { return .zero }
@@ -202,10 +257,6 @@ struct EditorCanvasLayout {
 /// Maps between normalized image coordinates (top-left origin) and view points (bottom-left origin).
 struct EditorImageMapping {
     let frame: CGRect
-
-    func viewPoint(_ n: CGPoint) -> CGPoint {
-        CGPoint(x: frame.minX + n.x * frame.width, y: frame.maxY - n.y * frame.height)
-    }
 
     func normalized(_ p: CGPoint) -> CGPoint {
         guard frame.width > 0, frame.height > 0 else { return .zero }
@@ -288,24 +339,10 @@ struct EditorHistory<Value: Equatable> {
 
 enum EditorFormatting {
     static func pixels(_ size: CGSize) -> String {
-        "\(Int(size.width.rounded())) × \(Int(size.height.rounded())) px"
+        "\(Int(size.width.rounded())) × \(Int(size.height.rounded()))"
     }
 
     static func estimate(bytes: Int64) -> String {
         "≈ " + ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-    }
-
-    /// "+12", "−5", "0" for a −1…1 slider shown as −100…100.
-    static func signedValue(_ value: Double, scale: Double = 100) -> String {
-        let n = Int((value * scale).rounded())
-        if n > 0 { return "+\(n)" }
-        if n < 0 { return "−\(-n)" }
-        return "0"
-    }
-
-    static func degrees(_ value: Double) -> String {
-        let n = (value * 10).rounded() / 10
-        if n == 0 { return "0°" }
-        return (n > 0 ? "+" : "−") + String(format: "%.1f°", abs(n))
     }
 }

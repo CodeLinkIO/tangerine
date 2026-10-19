@@ -31,7 +31,7 @@ struct EditorCanvas: NSViewRepresentable {
     }
 }
 
-/// Draws the preview on a checkerboard, with a crop overlay, pinch-zoom and scroll/drag panning.
+/// Draws the preview (checkerboard behind transparency) with a crop overlay, pinch/⌘-scroll zoom and panning.
 final class EditorCanvasView: NSView {
     var image: CGImage? {
         didSet { if image !== oldValue { imageLayer.contents = image } }
@@ -81,9 +81,9 @@ final class EditorCanvasView: NSView {
         imageLayer.minificationFilter = .trilinear
         imageLayer.magnificationFilter = .linear
         imageLayer.shadowColor = NSColor.black.cgColor
-        imageLayer.shadowOpacity = 0.25
-        imageLayer.shadowRadius = 8
-        imageLayer.shadowOffset = CGSize(width: 0, height: -2)
+        imageLayer.shadowOpacity = 0.12
+        imageLayer.shadowRadius = 10
+        imageLayer.shadowOffset = CGSize(width: 0, height: -3)
 
         dimLayer.fillRule = .evenOdd
         dimLayer.fillColor = NSColor.black.withAlphaComponent(0.55).cgColor

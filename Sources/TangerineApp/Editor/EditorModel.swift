@@ -1,64 +1,44 @@
 import AppKit
-import Combine
 import ImageIO
 import SwiftUI
 import TangerineKit
 
-enum EditorSection: String, CaseIterable, Identifiable {
-    case crop, adjust, filters, background, resize
+/// The four editing tools.
+enum EditorTool: String, CaseIterable, Identifiable {
+    case crop, rotate, flip, resize
 
     var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .crop: "Crop"
-        case .adjust: "Adjust"
-        case .filters: "Filters"
-        case .background: "Background"
-        case .resize: "Resize"
-        }
-    }
+    var title: String { rawValue.capitalized }
 
     var symbol: String {
         switch self {
-        case .crop: "crop.rotate"
-        case .adjust: "slider.horizontal.3"
-        case .filters: "camera.filters"
-        case .background: "person.crop.rectangle"
+        case .crop: "crop"
+        case .rotate: "rotate.right"
+        case .flip: "arrow.left.and.right.righttriangle.left.righttriangle.right"
         case .resize: "arrow.up.left.and.arrow.down.right"
         }
     }
 }
 
-enum EditorFill: String, CaseIterable, Identifiable {
-    case transparent, white, black, custom
-
-    var id: String { rawValue }
-    var title: String { rawValue.capitalized }
-}
-
-enum EditorResizeUnit: String, CaseIterable, Identifiable {
-    case pixels, percent
-
-    var id: String { rawValue }
-    var title: String { self == .pixels ? "Pixels" : "Percent" }
+/// Everything undo/redo restores: the geometry recipe plus the resize choice.
+struct EditorState: Equatable {
+    var recipe = EditRecipe()
+    var resize: EditorResize = .original
 }
 
 /// State and actions for one editor window.
 @MainActor
 final class EditorModel: ObservableObject {
-    enum Status: Equatable {
-        case idle, working, failed(String)
-    }
-
     enum Estimate: Equatable {
         case unknown, working, bytes(Int64), failed
     }
 
     let url: URL
     let sourceFormat: FileFormat
-    let defaults: ConversionOptions
+    let options: ConversionOptions
     let onSaved: (URL) -> Void
+    let primaryFormats: [FileFormat]
+    let moreFormats: [FileFormat]
 
     // MARK: Loading
 
@@ -67,86 +47,75 @@ final class EditorModel: ObservableObject {
     @Published private(set) var isFullResolutionReady = false
     /// Oriented pixel size of the source at full resolution.
     @Published private(set) var sourceSize: CGSize = .zero
-    private(set) var pipeline: EditorPipeline?
+    private var pipeline: EditorPipeline?
 
     // MARK: Edits
 
-    @Published private(set) var recipe = EditRecipe()
-    @Published private(set) var savedRecipe = EditRecipe()
+    @Published private(set) var state = EditorState()
+    @Published private(set) var savedState = EditorState()
     @Published private(set) var canUndo = false
     @Published private(set) var canRedo = false
-    private var history = EditorHistory<EditRecipe>()
-    private var continuousStart: EditRecipe?
-    private var lastCoalesceKey: String?
-    private var lastCoalesceTime = Date.distantPast
+    private var history = EditorHistory<EditorState>()
+    private var dragStart: EditorState?
+    private var cropEntryState: EditorState?
 
-    var isDirty: Bool { recipe != savedRecipe }
+    var isDirty: Bool { state != savedState }
+    var recipe: EditRecipe { state.recipe }
 
     // MARK: UI state
 
-    @Published var section: EditorSection = .adjust {
-        didSet {
-            guard section != oldValue else { return }
-            if (oldValue == .crop) != (section == .crop) { scheduleRender() }
-            if section == .filters { scheduleThumbnails(immediately: true) }
-        }
-    }
-    @Published var aspect: EditorAspect = .free
-    @Published var aspectSwapped = false
+    @Published private(set) var tool: EditorTool?
+    @Published private(set) var aspect: EditorAspect = .free
+    @Published private(set) var aspectSwapped = false
     @Published var zoom: CGFloat = 1
     @Published var pan: CGSize = .zero
     @Published var isComparing = false
-    @Published var resizeUnit: EditorResizeUnit = .pixels
-    @Published var resizeLocked = true
-    @Published var customFill = Color(.sRGB, red: 0.95, green: 0.36, blue: 0.16, opacity: 1)
-
     @Published private(set) var previewImage: CGImage?
     /// Whether `previewImage` was rendered without the crop (crop mode).
     @Published private(set) var previewIsUncropped = false
     @Published private(set) var originalImage: CGImage?
-    @Published private(set) var filterThumbnails: [FilterPreset: CGImage] = [:]
-    @Published private(set) var cutoutStatus: Status = .idle
 
     // MARK: Export
 
     @Published var exportFormat: FileFormat { didSet { if exportFormat != oldValue { scheduleEstimate() } } }
-    @Published var quality: Double { didSet { if quality != oldValue { scheduleEstimate() } } }
-    @Published var stripMetadata: Bool { didSet { if stripMetadata != oldValue { scheduleEstimate() } } }
+    @Published var qualityPreset: QualityPreset { didSet { if qualityPreset != oldValue { scheduleEstimate() } } }
     @Published private(set) var estimate: Estimate = .unknown
     @Published private(set) var isSaving = false
+    @Published private(set) var justSaved = false
     @Published var errorMessage: String?
-
-    let exportFormats: [FileFormat]
 
     private var renderInFlight = false
     private var renderPending = false
     private var estimateTask: Task<Void, Never>?
-    private var thumbnailTask: Task<Void, Never>?
 
     init(url: URL, options: ConversionOptions, onSaved: @escaping (URL) -> Void) {
         self.url = url
-        self.defaults = options
+        self.options = options
         self.onSaved = onSaved
         let format = FileFormat.detect(url) ?? .png
         sourceFormat = format
-        exportFormats = Self.exportFormats(for: format)
-        exportFormat = exportFormats.first ?? .png
-        quality = options.imageQuality
-        stripMetadata = options.stripImageMetadata
+        (primaryFormats, moreFormats) = Self.formatChoices(for: format)
+        exportFormat = primaryFormats.first ?? .png
+        qualityPreset = Preferences.shared.quality
     }
 
-    static func exportFormats(for source: FileFormat) -> [FileFormat] {
-        let order: [FileFormat] = [ImageEngine.editOutputFormat(for: source), .jpg, .png, .heic, .webp, .avif, .tiff,
-                                   .gif, .bmp, .pdf, .jp2, .tga, .exr, .psd, .ico, .icns]
+    /// Four everyday formats (the source's first) as chips; the rest go in "More".
+    static func formatChoices(for source: FileFormat) -> (primary: [FileFormat], more: [FileFormat]) {
         let writable = ImageCodec.writableFormats
-        var result: [FileFormat] = []
-        for format in order where writable.contains(format) && !result.contains(format) { result.append(format) }
-        return result
+        var primary: [FileFormat] = []
+        for format in [ImageEngine.editOutputFormat(for: source), .jpg, .png, .heic, .webp]
+            where writable.contains(format) && !primary.contains(format) && primary.count < 4 {
+            primary.append(format)
+        }
+        var more: [FileFormat] = []
+        for format in [FileFormat.webp, .avif, .tiff, .gif, .bmp, .pdf, .jp2, .tga, .exr, .psd, .ico, .icns, .jpg, .png, .heic]
+            where writable.contains(format) && !primary.contains(format) && !more.contains(format) {
+            more.append(format)
+        }
+        return (primary, more)
     }
 
-    static func isLossy(_ format: FileFormat) -> Bool {
-        [.jpg, .heic, .avif, .webp, .jp2].contains(format)
-    }
+    var isLossy: Bool { [.jpg, .heic, .avif, .webp, .jp2].contains(exportFormat) }
 
     // MARK: Loading
 
@@ -199,7 +168,14 @@ final class EditorModel: ObservableObject {
 
     var cropRect: CGRect { recipe.crop ?? EditorCropMath.unit }
     var croppedSize: CGSize { EditorCropMath.pixelSize(of: recipe.crop, baseSize: baseSize) }
-    var finalSize: CGSize { recipe.outputSize ?? croppedSize }
+    var finalSize: CGSize { state.resize.outputSize(for: croppedSize) ?? croppedSize }
+
+    /// The recipe written on save: geometry plus the resolved output size.
+    var exportRecipe: EditRecipe {
+        var r = state.recipe
+        r.outputSize = state.resize.outputSize(for: croppedSize)
+        return r
+    }
 
     /// Crop constraint in normalized units, or nil for a free crop.
     var normalizedCropRatio: CGFloat? {
@@ -207,71 +183,39 @@ final class EditorModel: ObservableObject {
             .map { EditorCropMath.normalizedRatio(pixelRatio: $0, baseSize: baseSize) }
     }
 
-    var canSwapAspect: Bool { ![.free, .square, .original].contains(aspect) }
-
     // MARK: Editing primitives
 
-    /// A discrete change: recorded as one undo step (or merged with the previous step for the same key within 1 s).
-    func change(coalescing key: String? = nil, _ mutate: (inout EditRecipe) -> Void) {
-        var next = recipe
+    /// A discrete change, recorded as one undo step.
+    private func apply(_ mutate: (inout EditorState) -> Void) {
+        var next = state
         mutate(&next)
-        guard next != recipe else { return }
-        let before = recipe
-        setRecipe(next)
-        guard continuousStart == nil else { return }
-        let now = Date()
-        if let key, key == lastCoalesceKey, now.timeIntervalSince(lastCoalesceTime) < 1 {
-            lastCoalesceTime = now
-            return
+        guard next != state else { return }
+        let before = state
+        setState(next)
+        if dragStart == nil {
+            history.record(before: before, after: next)
+            updateUndoState()
         }
-        lastCoalesceKey = key
-        lastCoalesceTime = now
-        history.record(before: before, after: next)
-        updateUndoState()
-    }
-
-    /// Starts a drag-style edit; everything until `endContinuousEdit` becomes one undo step.
-    func beginContinuousEdit() {
-        if continuousStart == nil { continuousStart = recipe }
-    }
-
-    func endContinuousEdit() {
-        guard let start = continuousStart else { return }
-        continuousStart = nil
-        lastCoalesceKey = nil
-        history.record(before: start, after: recipe)
-        updateUndoState()
-    }
-
-    /// Live update during a continuous edit (no undo step on its own).
-    func update(_ mutate: (inout EditRecipe) -> Void) {
-        beginContinuousEdit()
-        var next = recipe
-        mutate(&next)
-        if next != recipe { setRecipe(next) }
     }
 
     func undo() {
-        endContinuousEdit()
-        guard let previous = history.undo(from: recipe) else { return }
-        lastCoalesceKey = nil
-        setRecipe(previous)
+        finishDrag()
+        guard let previous = history.undo(from: state) else { return }
+        setState(previous)
         updateUndoState()
     }
 
     func redo() {
-        endContinuousEdit()
-        guard let next = history.redo(from: recipe) else { return }
-        lastCoalesceKey = nil
-        setRecipe(next)
+        finishDrag()
+        guard let next = history.redo(from: state) else { return }
+        setState(next)
         updateUndoState()
     }
 
     func resetAll() {
         aspect = .free
         aspectSwapped = false
-        cutoutStatus = .idle
-        change { $0 = EditRecipe() }
+        apply { $0 = EditorState() }
     }
 
     private func updateUndoState() {
@@ -279,27 +223,71 @@ final class EditorModel: ObservableObject {
         canRedo = history.canRedo
     }
 
-    private func setRecipe(_ next: EditRecipe) {
-        let old = recipe
-        recipe = next
-        scheduleRender()
+    private func setState(_ next: EditorState) {
+        let geometryChanged = next.recipe != state.recipe
+        state = next
+        if geometryChanged { scheduleRender() }
         scheduleEstimate()
-        var oldNoFilter = old, newNoFilter = next
-        oldNoFilter.filter = .none
-        newNoFilter.filter = .none
-        if section == .filters, oldNoFilter != newNoFilter { scheduleThumbnails(immediately: false) }
     }
 
-    // MARK: Crop & geometry
+    private func finishDrag() {
+        guard let start = dragStart else { return }
+        dragStart = nil
+        history.record(before: start, after: state)
+        updateUndoState()
+    }
+
+    // MARK: Tools
+
+    /// Tool buttons: Crop and Resize toggle their options; Rotate and Flip act immediately.
+    /// With ⌥, Rotate turns counter-clockwise and Flip mirrors vertically.
+    func tap(_ tapped: EditorTool, alternate: Bool = false) {
+        switch tapped {
+        case .crop, .resize:
+            setTool(tool == tapped ? nil : tapped)
+        case .rotate:
+            setTool(.rotate)
+            rotate(clockwise: !alternate)
+        case .flip:
+            setTool(.flip)
+            flip(horizontal: !alternate)
+        }
+    }
+
+    private func setTool(_ next: EditorTool?) {
+        guard next != tool else { return }
+        let wasCropping = tool == .crop
+        tool = next
+        if next == .crop {
+            cropEntryState = state
+            applyAspectConstraint()
+        }
+        if wasCropping != (next == .crop) { scheduleRender() }
+    }
+
+    /// Return: keep the crop and leave crop mode.
+    func commitCrop() {
+        guard tool == .crop else { return }
+        setTool(nil)
+    }
+
+    /// Escape: undo crop changes made since entering crop mode.
+    func cancelCrop() {
+        guard tool == .crop else { return }
+        if let entry = cropEntryState, entry != state { apply { $0 = entry } }
+        setTool(nil)
+    }
+
+    // MARK: Crop
 
     func setAspect(_ newAspect: EditorAspect) {
         aspect = newAspect
-        if !canSwapAspect { aspectSwapped = false }
+        if !newAspect.canSwap { aspectSwapped = false }
         applyAspectConstraint()
     }
 
     func swapAspect() {
-        guard canSwapAspect else { return }
+        guard aspect.canSwap else { return }
         aspectSwapped.toggle()
         applyAspectConstraint()
     }
@@ -307,171 +295,74 @@ final class EditorModel: ObservableObject {
     private func applyAspectConstraint() {
         guard let ratio = normalizedCropRatio else { return }
         let fitted = EditorCropMath.fit(ratio: ratio, in: cropRect)
-        change { $0.crop = EditorCropMath.isFull(fitted) ? nil : fitted; Self.syncOutputSize(&$0, locked: self.resizeLocked, base: self.baseSize) }
+        apply { $0.recipe.crop = EditorCropMath.isFull(fitted) ? nil : fitted }
     }
 
-    /// Called by the canvas while dragging crop handles.
+    /// Called by the canvas while dragging crop handles; one drag is one undo step.
     func updateCrop(_ rect: CGRect, ended: Bool) {
-        update { recipe in
-            recipe.crop = EditorCropMath.isFull(rect) ? nil : rect
-            Self.syncOutputSize(&recipe, locked: resizeLocked, base: baseSize)
-        }
-        if ended { endContinuousEdit() }
+        if dragStart == nil { dragStart = state }
+        var next = state
+        next.recipe.crop = EditorCropMath.isFull(rect) ? nil : rect
+        if next != state { setState(next) }
+        if ended { finishDrag() }
     }
 
-    /// Keeps a locked output size proportional to a changed crop (width wins).
-    private static func syncOutputSize(_ recipe: inout EditRecipe, locked: Bool, base: CGSize) {
-        guard locked, let size = recipe.outputSize else { return }
-        let cropped = EditorCropMath.pixelSize(of: recipe.crop, baseSize: base)
-        recipe.outputSize = CGSize(width: size.width, height: max(1, (size.width * cropped.height / cropped.width).rounded()))
-    }
+    // MARK: Rotate & flip
 
     func rotate(clockwise: Bool) {
-        change { r in
+        apply { s in
             // With exactly one mirror applied, a visual clockwise turn is a counter-clockwise quarter turn.
-            let mirrored = r.flipHorizontal != r.flipVertical
-            r.quarterTurns = ((r.quarterTurns + (clockwise != mirrored ? 1 : -1)) % 4 + 4) % 4
-            if let crop = r.crop { r.crop = EditorCropMath.rotated(crop, clockwise: clockwise) }
-            if let size = r.outputSize { r.outputSize = CGSize(width: size.height, height: size.width) }
+            let mirrored = s.recipe.flipHorizontal != s.recipe.flipVertical
+            s.recipe.quarterTurns = ((s.recipe.quarterTurns + (clockwise != mirrored ? 1 : -1)) % 4 + 4) % 4
+            if let crop = s.recipe.crop { s.recipe.crop = EditorCropMath.rotated(crop, clockwise: clockwise) }
+            s.resize = s.resize.rotated
         }
-        if canSwapAspect { aspectSwapped.toggle() }
+        if aspect.canSwap { aspectSwapped.toggle() }
     }
 
     func flip(horizontal: Bool) {
-        change { r in
-            if horizontal { r.flipHorizontal.toggle() } else { r.flipVertical.toggle() }
-            // Mirroring reverses the straighten direction.
-            r.straighten = -r.straighten
-            if let crop = r.crop { r.crop = EditorCropMath.flipped(crop, horizontally: horizontal) }
+        apply { s in
+            if horizontal { s.recipe.flipHorizontal.toggle() } else { s.recipe.flipVertical.toggle() }
+            if let crop = s.recipe.crop { s.recipe.crop = EditorCropMath.flipped(crop, horizontally: horizontal) }
         }
-    }
-
-    func resetGeometry() {
-        aspect = .free
-        aspectSwapped = false
-        change { r in
-            r.crop = nil
-            r.straighten = 0
-            r.quarterTurns = 0
-            r.flipHorizontal = false
-            r.flipVertical = false
-            Self.syncOutputSize(&r, locked: resizeLocked, base: sourceSize)
-        }
-    }
-
-    var hasGeometryEdits: Bool {
-        recipe.crop != nil || recipe.straighten != 0 || recipe.quarterTurns != 0 || recipe.flipHorizontal || recipe.flipVertical
-    }
-
-    // MARK: Adjustments
-
-    var hasColorEdits: Bool {
-        var colorOnly = EditRecipe()
-        colorOnly.filter = recipe.filter
-        var current = recipe
-        current.quarterTurns = 0; current.flipHorizontal = false; current.flipVertical = false
-        current.straighten = 0; current.crop = nil; current.outputSize = nil
-        current.removeBackground = false; current.backgroundFill = nil
-        return current != colorOnly
-    }
-
-    func resetAdjustments() {
-        change { r in
-            r.autoEnhance = false
-            r.exposure = 0; r.brightness = 0; r.contrast = 0; r.highlights = 0; r.shadows = 0
-            r.saturation = 0; r.vibrance = 0; r.temperature = 0; r.tint = 0; r.sharpness = 0; r.vignette = 0
-        }
-    }
-
-    // MARK: Background
-
-    func setRemoveBackground(_ on: Bool) {
-        guard on else {
-            cutoutStatus = .idle
-            change { $0.removeBackground = false }
-            return
-        }
-        guard let pipeline else { return }
-        cutoutStatus = .working
-        Task {
-            do {
-                _ = try await Task.detached(priority: .userInitiated) { try pipeline.preparePreviewCutout() }.value
-                self.cutoutStatus = .idle
-                self.change { $0.removeBackground = true }
-            } catch {
-                self.cutoutStatus = .failed(error.localizedDescription)
-            }
-        }
-    }
-
-    var fill: EditorFill {
-        guard let fill = recipe.backgroundFill else { return .transparent }
-        if fill == .white { return .white }
-        if fill == .black { return .black }
-        return .custom
-    }
-
-    func setFill(_ choice: EditorFill) {
-        change { r in
-            switch choice {
-            case .transparent: r.backgroundFill = nil
-            case .white: r.backgroundFill = .white
-            case .black: r.backgroundFill = .black
-            case .custom: r.backgroundFill = Self.solid(customFill)
-            }
-        }
-    }
-
-    func setCustomFill(_ color: Color) {
-        customFill = color
-        change(coalescing: "fill") { $0.backgroundFill = Self.solid(color) }
-    }
-
-    static func solid(_ color: Color) -> SolidColor {
-        let ns = NSColor(color).usingColorSpace(.sRGB) ?? .white
-        return SolidColor(red: Double(ns.redComponent), green: Double(ns.greenComponent), blue: Double(ns.blueComponent))
     }
 
     // MARK: Resize
 
-    func setResizeEnabled(_ on: Bool) {
-        change { $0.outputSize = on ? self.croppedSize : nil }
+    func setResize(_ resize: EditorResize) {
+        apply { $0.resize = resize }
     }
 
-    func setOutputWidth(_ width: Double) {
-        let w = max(1, min(width.rounded(), 30_000))
-        change(coalescing: "resize") { r in
-            let current = r.outputSize ?? croppedSize
-            let h = resizeLocked ? max(1, (w * croppedSize.height / croppedSize.width).rounded()) : current.height
-            r.outputSize = CGSize(width: w, height: h)
-        }
+    /// Switches to a custom size, starting from the current result.
+    func startCustomSize() {
+        guard !state.resize.isCustom else { return }
+        let size = finalSize
+        setResize(.custom(width: Int(size.width), height: Int(size.height), locked: true))
     }
 
-    func setOutputHeight(_ height: Double) {
-        let h = max(1, min(height.rounded(), 30_000))
-        change(coalescing: "resize") { r in
-            let current = r.outputSize ?? croppedSize
-            let w = resizeLocked ? max(1, (h * croppedSize.width / croppedSize.height).rounded()) : current.width
-            r.outputSize = CGSize(width: w, height: h)
-        }
+    /// The custom size as shown in the fields (a locked height follows the crop's aspect).
+    var customSize: (width: Int, height: Int, locked: Bool)? {
+        guard case let .custom(_, _, locked) = state.resize else { return nil }
+        return (Int(finalSize.width), Int(finalSize.height), locked)
     }
 
-    var scalePercent: Double {
-        guard croppedSize.width > 0 else { return 100 }
-        return (finalSize.width / croppedSize.width * 100).rounded()
+    func setCustomWidth(_ width: Int) {
+        guard let current = customSize else { return }
+        let w = min(max(1, width), 30_000)
+        let h = current.locked ? max(1, Int((CGFloat(w) * croppedSize.height / croppedSize.width).rounded())) : current.height
+        setResize(.custom(width: w, height: h, locked: current.locked))
     }
 
-    func setScalePercent(_ percent: Double) {
-        let p = max(1, min(percent, 400)) / 100
-        change(coalescing: "resize") { r in
-            r.outputSize = CGSize(width: max(1, (croppedSize.width * p).rounded()), height: max(1, (croppedSize.height * p).rounded()))
-        }
+    func setCustomHeight(_ height: Int) {
+        guard let current = customSize else { return }
+        let h = min(max(1, height), 30_000)
+        let w = current.locked ? max(1, Int((CGFloat(h) * croppedSize.width / croppedSize.height).rounded())) : current.width
+        setResize(.custom(width: w, height: h, locked: current.locked))
     }
 
-    func fitLongestEdge(_ pixels: Double) {
-        let longest = max(croppedSize.width, croppedSize.height)
-        guard longest > 0 else { return }
-        setScalePercent(min(100, pixels / longest * 100))
+    func toggleCustomLock() {
+        guard let current = customSize else { return }
+        setResize(.custom(width: current.width, height: current.height, locked: !current.locked))
     }
 
     // MARK: Zoom
@@ -486,12 +377,12 @@ final class EditorModel: ObservableObject {
 
     // MARK: Rendering
 
-    func scheduleRender() {
+    private func scheduleRender() {
         renderPending = true
         guard !renderInFlight, let pipeline else { return }
         renderPending = false
         renderInFlight = true
-        let recipe = self.recipe, cropMode = section == .crop
+        let recipe = self.recipe, cropMode = tool == .crop
         Task {
             let image = await Task.detached(priority: .userInitiated) {
                 pipeline.renderPreview(recipe, cropMode: cropMode)
@@ -505,31 +396,16 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    private func scheduleThumbnails(immediately: Bool) {
-        thumbnailTask?.cancel()
-        guard let pipeline else { return }
-        let recipe = self.recipe
-        thumbnailTask = Task {
-            if !immediately { try? await Task.sleep(nanoseconds: 300_000_000) }
-            guard !Task.isCancelled else { return }
-            let thumbnails = await Task.detached(priority: .utility) { pipeline.renderFilterThumbnails(recipe) }.value
-            guard !Task.isCancelled else { return }
-            self.filterThumbnails = thumbnails
-        }
-    }
-
     private func scheduleEstimate() {
         estimateTask?.cancel()
         guard let pipeline, isFullResolutionReady else { return }
         estimate = .working
-        let recipe = self.recipe, format = exportFormat, quality = self.quality, strip = stripMetadata
-        let background = defaults.flattenBackground
+        let recipe = exportRecipe, format = exportFormat, quality = self.quality, options = self.options
         estimateTask = Task {
-            try? await Task.sleep(nanoseconds: 600_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             guard !Task.isCancelled else { return }
             do {
-                let bytes = try await pipeline.estimateSize(recipe, format: format, quality: quality,
-                                                            stripMetadata: strip, background: background)
+                let bytes = try await pipeline.estimateSize(recipe, format: format, quality: quality, options: options)
                 guard !Task.isCancelled else { return }
                 self.estimate = .bytes(bytes)
             } catch {
@@ -541,14 +417,24 @@ final class EditorModel: ObservableObject {
 
     // MARK: Saving
 
-    var transparencyWarning: String? {
-        guard recipe.removeBackground, recipe.backgroundFill == nil, !ImageCodec.supportsAlpha(exportFormat) else { return nil }
-        return "\(exportFormat.displayName) can't store transparency, so the background will be white."
+    private var quality: Double { qualityPreset.imageQuality }
+
+    /// Shown when the chosen format would drop the image's transparency.
+    var transparencyHint: String? {
+        guard pipeline?.sourceHasAlpha == true, !ImageCodec.supportsAlpha(exportFormat) else { return nil }
+        let fill = options.flattenBackground == .black ? "black" : "white"
+        return "\(exportFormat.displayName) has no transparency, so see-through areas become \(fill)."
     }
 
-    var canOverwrite: Bool {
-        ImageCodec.writableFormats.contains(sourceFormat) && ![.ico, .icns, .pdf].contains(sourceFormat)
-            && FileManager.default.isWritableFile(atPath: url.path)
+    /// Replacing keeps the original's format, so it needs that format selected.
+    var canReplaceOriginal: Bool {
+        exportFormat == sourceFormat && ImageCodec.writableFormats.contains(sourceFormat)
+            && ![.ico, .icns, .pdf].contains(sourceFormat) && FileManager.default.isWritableFile(atPath: url.path)
+    }
+
+    var replaceHelp: String {
+        canReplaceOriginal ? "Overwrite “\(url.lastPathComponent)”"
+            : "Choose \(sourceFormat.displayName) to replace the original"
     }
 
     /// Writes "<name> edited.<ext>" next to the original. Returns true on success.
@@ -564,10 +450,10 @@ final class EditorModel: ObservableObject {
         let directory = Engine.outputDirectory(for: url, preferred: nil)
         let destination = OutputPlan(for: url, directory: directory).file(extension: exportFormat.fileExtension, suffix: "edited")
         do {
-            try await pipeline.export(recipe, format: exportFormat, quality: quality, stripMetadata: stripMetadata,
-                                      background: defaults.flattenBackground, to: destination)
-            savedRecipe = recipe
+            try await pipeline.export(exportRecipe, format: exportFormat, quality: quality, options: options, to: destination)
+            savedState = state
             onSaved(destination)
+            flashSaved()
             return true
         } catch {
             try? FileManager.default.removeItem(at: destination)
@@ -576,9 +462,9 @@ final class EditorModel: ObservableObject {
         }
     }
 
-    /// Replaces the original file (same format), then reloads it as the new starting point.
-    func overwrite() async {
-        guard !isSaving, canOverwrite, let pipeline, isFullResolutionReady else { return }
+    /// Replaces the original file, then reloads it as the new starting point.
+    func replaceOriginal() async {
+        guard !isSaving, canReplaceOriginal, let pipeline, isFullResolutionReady else { return }
         isSaving = true
         defer { isSaving = false }
         do {
@@ -586,25 +472,32 @@ final class EditorModel: ObservableObject {
             let scratch = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
             defer { try? fm.removeItem(at: scratch) }
             let temp = scratch.appendingPathComponent(url.lastPathComponent)
-            try await pipeline.export(recipe, format: sourceFormat, quality: quality, stripMetadata: stripMetadata,
-                                      background: defaults.flattenBackground, to: temp)
+            try await pipeline.export(exportRecipe, format: sourceFormat, quality: quality, options: options, to: temp)
             _ = try fm.replaceItemAt(url, withItemAt: temp)
             onSaved(url)
-            reloadAfterOverwrite()
+            reloadAfterReplace()
+            flashSaved()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func reloadAfterOverwrite() {
+    private func flashSaved() {
+        justSaved = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            self.justSaved = false
+        }
+    }
+
+    private func reloadAfterReplace() {
         history.clear()
         updateUndoState()
-        recipe = EditRecipe()
-        savedRecipe = EditRecipe()
+        state = EditorState()
+        savedState = EditorState()
+        tool = nil
         aspect = .free
         aspectSwapped = false
-        cutoutStatus = .idle
-        filterThumbnails = [:]
         previewImage = nil
         isFullResolutionReady = false
         estimate = .unknown
