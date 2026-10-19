@@ -123,9 +123,8 @@ public enum ToolID: String, CaseIterable, Sendable, Codable {
     public static func orderedTools(for category: FormatCategory) -> [ToolID] {
         switch category {
         case .image:
-            [.openEditor, .compress, .resizeHalf, .rotateRight, .flipHorizontal, .removeBackground,
-             .autoEnhance, .stripMetadata, .copyText, .grayscale, .rotateLeft, .flipVertical,
-             .resizeLong2048, .resizeLong1080, .trimTransparent, .makeSquare, .makeIcon, .mergePDF]
+            // Kept deliberately short: simple edits only. Other tools remain available from the CLI.
+            [.openEditor, .compress, .resizeHalf, .resizeLong1080, .rotateRight, .rotateLeft, .flipHorizontal, .mergePDF]
         case .video: [.compress, .mute]
         case .audio: [.compress]
         case .pdf: [.compress, .splitPDF, .mergePDF]

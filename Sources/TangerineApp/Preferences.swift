@@ -36,6 +36,41 @@ enum WheelMode: String, CaseIterable {
     var title: String { self == .convert ? "Convert" : "Edit" }
 }
 
+/// One simple quality choice instead of per-format knobs.
+enum QualityPreset: String, CaseIterable, Codable, Identifiable {
+    case small, balanced, best
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+
+    /// Lossy image quality used for JPG/HEIC/WebP/AVIF.
+    var imageQuality: Double {
+        switch self {
+        case .small: 0.6
+        case .balanced: 0.82
+        case .best: 0.95
+        }
+    }
+
+    func apply(to options: ConversionOptions) -> ConversionOptions {
+        var result = options
+        result.imageQuality = imageQuality
+        switch self {
+        case .small:
+            result.videoQuality = 0.45
+            result.audioBitrateKbps = 128
+            if result.videoResolution == .original { result.videoResolution = .p1080 }   // never upscales
+        case .balanced:
+            result.videoQuality = 0.65
+            result.audioBitrateKbps = 192
+        case .best:
+            result.videoQuality = 0.85
+            result.audioBitrateKbps = 320
+        }
+        return result
+    }
+}
+
 /// App settings persisted in UserDefaults.
 @MainActor
 final class Preferences: ObservableObject {
@@ -47,6 +82,7 @@ final class Preferences: ObservableObject {
     @Published var toolsKey: ModifierKey { didSet { defaults.set(toolsKey.rawValue, forKey: "toolsKey") } }
     @Published var dragWheelEnabled: Bool { didSet { defaults.set(dragWheelEnabled, forKey: "dragWheelEnabled") } }
     @Published var options: ConversionOptions { didSet { save(options, forKey: "conversionOptions") } }
+    @Published var quality: QualityPreset { didSet { defaults.set(quality.rawValue, forKey: "quality") } }
     /// Fixed output folder, or nil to save next to the original.
     @Published var outputFolder: URL? { didSet { defaults.set(outputFolder?.path, forKey: "outputFolder") } }
     @Published var revealInFinder: Bool { didSet { defaults.set(revealInFinder, forKey: "revealInFinder") } }
@@ -64,6 +100,7 @@ final class Preferences: ObservableObject {
         toolsKey = ModifierKey(rawValue: defaults.string(forKey: "toolsKey") ?? "") ?? .command
         dragWheelEnabled = defaults.object(forKey: "dragWheelEnabled") as? Bool ?? true
         options = Self.load(ConversionOptions.self, from: defaults, key: "conversionOptions") ?? ConversionOptions()
+        quality = QualityPreset(rawValue: defaults.string(forKey: "quality") ?? "") ?? .balanced
         outputFolder = defaults.string(forKey: "outputFolder").map { URL(fileURLWithPath: $0, isDirectory: true) }
         revealInFinder = defaults.bool(forKey: "revealInFinder")
         replaceOriginals = defaults.bool(forKey: "replaceOriginals")
@@ -74,6 +111,9 @@ final class Preferences: ObservableObject {
             FormatCategory(rawValue: key).map { ($0, value) }
         })
     }
+
+    /// Advanced options with the quality preset applied; what the wheel and editor use.
+    var effectiveOptions: ConversionOptions { quality.apply(to: options) }
 
     func key(for mode: WheelMode) -> ModifierKey { mode == .convert ? convertKey : toolsKey }
 

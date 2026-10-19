@@ -30,7 +30,7 @@ final class JobRunner {
                 .finish(.info, title: "Only images can be edited", detail: url.lastPathComponent)
             return
         }
-        EditorWindowController.open(url, options: Preferences.shared.options) { saved in
+        EditorWindowController.open(url, options: Preferences.shared.effectiveOptions) { saved in
             Recents.shared.add([saved])
             HUDController.shared.present(title: "Saved", detail: "")
                 .finish(.success, title: "Saved \(saved.lastPathComponent)", outputs: [saved])
@@ -42,7 +42,7 @@ final class JobRunner {
     private func run(title: String, files: [URL], conversionTarget: FileFormat?, work: @escaping Work) {
         let prefs = Preferences.shared
         let hud = HUDController.shared.present(title: title, detail: WheelController.summary(of: files))
-        let options = prefs.options
+        let options = prefs.effectiveOptions
         let folder = prefs.outputFolder
 
         let task = Task { @MainActor in
