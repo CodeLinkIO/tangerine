@@ -40,7 +40,7 @@ final class WheelView: NSView {
 
     var items: [WheelItem] = [] { didSet { highlighted = nil; needsDisplay = true; updateMask() } }
     var mode: WheelMode = .convert { didSet { needsDisplay = true } }
-    var keys: [(ModifierKey, WheelMode)] = [] { didSet { needsDisplay = true } }
+    var keys: [(ModifierKey, WheelMode)] = [] { didSet { needsDisplay = true; updateMask() } }
     var subtitle = "" { didSet { needsDisplay = true } }
     var emptyMessage = "" { didSet { needsDisplay = true } }
     private(set) var highlighted: Int? { didSet { if highlighted != oldValue { needsDisplay = true; hapticTick() } } }

@@ -11,10 +11,9 @@ final class ConverterWindowController: NSWindowController, NSWindowDelegate {
 
     private init() {
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 760, height: 520),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Converter"
-        window.titlebarAppearsTransparent = true
         window.minSize = CGSize(width: 620, height: 380)
         window.isReleasedWhenClosed = false
         window.setFrameAutosaveName("ConverterWindow")
@@ -95,7 +94,6 @@ struct ConverterView: View {
         }
         .listStyle(.inset)
         .onDeleteCommand { model.remove(model.selection) }
-        .padding(.top, 28)
     }
 
     private var footer: some View {

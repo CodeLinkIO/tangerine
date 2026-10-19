@@ -45,7 +45,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !Preferences.shared.hasSeenWelcome {
             WelcomeWindowController.shared.show()
         }
+        #if DEBUG
+        runDemoHooks()
+        #endif
     }
+
+    #if DEBUG
+    /// Debug builds only: TANGERINE_DEMO=wheel|tools|converter|settings|welcome [TANGERINE_DEMO_FILE=path]
+    /// opens UI without input events, for screenshots and manual checks.
+    private func runDemoHooks() {
+        let env = ProcessInfo.processInfo.environment
+        guard let demo = env["TANGERINE_DEMO"] else { return }
+        let files = env["TANGERINE_DEMO_FILE"].map { [URL(fileURLWithPath: $0)] } ?? []
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            switch demo {
+            case "wheel", "tools":
+                let frame = NSScreen.main?.visibleFrame ?? .zero
+                WheelController.shared.show(files: files, mode: demo == "tools" ? .tools : .convert, interaction: .click,
+                                            at: CGPoint(x: frame.midX, y: frame.midY))
+            case "converter": ConverterWindowController.shared.show(adding: files)
+            case "settings": SettingsWindowController.shared.show()
+            case "welcome": WelcomeWindowController.shared.show()
+            case "editor": if let file = files.first { JobRunner.shared.openEditor(file) }
+            default: break
+            }
+        }
+    }
+    #endif
 
     /// Files opened via "Open With", the Dock or `open -a`: images go to the editor, the rest to the Converter.
     func application(_ application: NSApplication, open urls: [URL]) {
