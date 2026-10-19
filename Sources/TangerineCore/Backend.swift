@@ -42,7 +42,7 @@ public struct ConversionOptions: Sendable, Codable, Equatable {
     /// Drop EXIF, GPS and other metadata from images.
     public var stripImageMetadata: Bool = false
     /// Background used when flattening transparency (e.g. PNG → JPG), as sRGB 0...1.
-    public var flattenBackground: RGBColor = .white
+    public var flattenBackground: SolidColor = .white
 
     public var videoResolution: VideoResolution = .original
     public var videoCodec: VideoCodec = .h264
@@ -61,7 +61,7 @@ public struct ConversionOptions: Sendable, Codable, Equatable {
     public init() {}
 }
 
-public struct RGBColor: Sendable, Codable, Equatable {
+public struct SolidColor: Sendable, Codable, Equatable {
     public var red: Double, green: Double, blue: Double
 
     public init(red: Double, green: Double, blue: Double) {
@@ -70,8 +70,8 @@ public struct RGBColor: Sendable, Codable, Equatable {
         self.blue = blue
     }
 
-    public static let white = RGBColor(red: 1, green: 1, blue: 1)
-    public static let black = RGBColor(red: 0, green: 0, blue: 0)
+    public static let white = SolidColor(red: 1, green: 1, blue: 1)
+    public static let black = SolidColor(red: 0, green: 0, blue: 0)
 }
 
 // MARK: - Context and results

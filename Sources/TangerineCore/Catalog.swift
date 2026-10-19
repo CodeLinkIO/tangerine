@@ -6,7 +6,7 @@ public enum TargetCatalog {
     public static func orderedTargets(for category: FormatCategory) -> [FileFormat] {
         switch category {
         case .image:
-            [.jpg, .png, .heic, .webp, .avif, .tiff, .gif, .pdf, .bmp, .ico, .icns, .jp2, .tga, .txt]
+            [.jpg, .png, .heic, .webp, .avif, .tiff, .gif, .pdf, .bmp, .ico, .icns, .jp2, .tga, .txt, .mp4]
         case .video:
             [.mp4, .mov, .gif, .mp3, .m4a, .webm, .mkv, .avi, .wmv, .m4v, .wav, .aiff, .flac]
         case .audio:
