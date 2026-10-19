@@ -143,3 +143,12 @@ and a paid conversion allowance.
 5. Packaging (bundled ffmpeg, signing, notarization); later, data, subtitles and archives
 
 PDF and documents are built in phase 1, alongside images, video and audio.
+
+## Status (2026-10-19)
+- ✅ Phase 1: core engine and CLI. Images, video, audio, PDF and documents; quick image edits; 88 tests passing
+- ✅ Phase 2: Mac app. Drag wheel, menu-bar drop, HUD, Converter window, Settings, onboarding
+- ✅ Phase 3: image editor window
+- ✅ Phase 4: Finder Services and ⌃⌥T shortcut
+- ⏳ Not yet done: region redact, annotate, watermark, batch edit recipes, editor zoom at full resolution, bundled
+  ffmpeg/libwebp, Developer ID signing and notarization. Data, subtitles and archives are deferred.
+- ⚠️ The drag-and-tap gesture itself still needs a manual test on a real desktop; automated runs can't send input events.
