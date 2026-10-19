@@ -1,0 +1,79 @@
+import AppKit
+import Carbon.HIToolbox
+import Combine
+import TangerineKit
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: StatusItemController?
+    private let dragMonitor = DragMonitor()
+    private let services = ServiceProvider()
+    private var finderHotKey: HotKey?
+    private var subscriptions: Set<AnyCancellable> = []
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        statusItem = StatusItemController()
+        NSApp.servicesProvider = services
+        NSUpdateDynamicServices()
+
+        WheelController.shared.onChoose = { item, files in JobRunner.shared.perform(item, on: files) }
+
+        dragMonitor.onModifierTap = { key, files in
+            let prefs = Preferences.shared
+            guard prefs.dragWheelEnabled, let mode = prefs.mode(for: key) else { return }
+            let wheel = WheelController.shared
+            if wheel.isVisible, wheel.interaction == .drag {
+                wheel.setMode(mode)
+            } else {
+                wheel.show(files: files, mode: mode, interaction: .drag)
+            }
+        }
+        dragMonitor.onDragEnded = { WheelController.shared.dragEnded() }
+        dragMonitor.start()
+
+        Preferences.shared.$finderShortcutEnabled
+            .sink { [weak self] enabled in self?.updateFinderShortcut(enabled) }
+            .store(in: &subscriptions)
+
+        // Warm up engine capability checks (spawns ffmpeg once) so the first wheel opens instantly.
+        Task.detached(priority: .utility) {
+            _ = FFmpeg.shared.encoders
+            _ = ImageCodec.writableFormats
+        }
+
+        if !Preferences.shared.hasSeenWelcome {
+            WelcomeWindowController.shared.show()
+        }
+    }
+
+    /// Files opened via "Open With", the Dock or `open -a`: images go to the editor, the rest to the Converter.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if urls.count == 1, FileFormat.detect(urls[0])?.category == .image {
+            JobRunner.shared.openEditor(urls[0])
+        } else {
+            ConverterWindowController.shared.show(adding: urls)
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { ConverterWindowController.shared.show() }
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    private func updateFinderShortcut(_ enabled: Bool) {
+        finderHotKey?.unregister()
+        finderHotKey = nil
+        guard enabled else { return }
+        finderHotKey = HotKey(keyCode: kVK_ANSI_T, modifiers: controlKey | optionKey) {
+            let files = FinderSelection.current()
+            guard !files.isEmpty else {
+                NSSound.beep()
+                return
+            }
+            WheelController.shared.show(files: files, mode: .convert, interaction: .click)
+        }
+    }
+}

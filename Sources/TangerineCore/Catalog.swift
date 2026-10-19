@@ -89,8 +89,8 @@ public enum ToolID: String, CaseIterable, Sendable, Codable {
     public var symbol: String {
         switch self {
         case .openEditor: "slider.horizontal.3"
-        case .compress: "arrow.down.right.and.arrow.up.left"
-        case .resizeHalf: "arrow.down.forward.and.arrow.up.backward"
+        case .compress: "rectangle.compress.vertical"
+        case .resizeHalf: "arrow.down.right.and.arrow.up.left"
         case .resizeLong2048, .resizeLong1080: "aspectratio"
         case .rotateLeft: "rotate.left"
         case .rotateRight: "rotate.right"

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>Tangerine</string>
+    <key>CFBundleDisplayName</key><string>Tangerine</string>
+    <key>CFBundleIdentifier</key><string>dev.tangerine.converter</string>
+    <key>CFBundleExecutable</key><string>Tangerine</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>LSUIElement</key><true/>
+    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Tangerine reads the Finder selection when you press ⌃⌥T so it can convert those files.</string>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>Convert with Tangerine</string></dict>
+            <key>NSMessage</key><string>convertFiles</string>
+            <key>NSPortName</key><string>Tangerine</string>
+            <key>NSRequiredContext</key><dict/>
+            <key>NSSendFileTypes</key><array><string>public.item</string></array>
+        </dict>
+        <dict>
+            <key>NSMenuItem</key><dict><key>default</key><string>Edit Image with Tangerine</string></dict>
+            <key>NSMessage</key><string>editImage</string>
+            <key>NSPortName</key><string>Tangerine</string>
+            <key>NSRequiredContext</key><dict/>
+            <key>NSSendFileTypes</key><array><string>public.image</string></array>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>Image</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.image</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Media and Documents</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.movie</string>
+                <string>public.audio</string>
+                <string>com.adobe.pdf</string>
+                <string>public.text</string>
+                <string>org.openxmlformats.wordprocessingml.document</string>
+                <string>public.rtf</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

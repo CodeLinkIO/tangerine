@@ -61,7 +61,7 @@ public struct ConversionOptions: Sendable, Codable, Equatable {
     public init() {}
 }
 
-public struct SolidColor: Sendable, Codable, Equatable {
+public struct SolidColor: Sendable, Codable, Hashable {
     public var red: Double, green: Double, blue: Double
 
     public init(red: Double, green: Double, blue: Double) {
