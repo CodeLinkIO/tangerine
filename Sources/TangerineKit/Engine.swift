@@ -84,7 +84,7 @@ public final class Engine: @unchecked Sendable {
     /// Targets every input supports (folders are expanded), in the first input's catalog order.
     /// Inputs already in the target format are skipped, so "PNG" is offered for a JPG + PNG selection.
     public func targets(for inputs: [URL]) -> [FileFormat] {
-        let formats = Self.distinctFormats(expand(inputs))
+        let formats = Self.distinctFormats(expand(inputs, limit: Self.capabilitySampleSize))
         guard let first = formats.first else { return [] }
         let supported = formats.map { Set(targets(from: $0)) }
         var candidates = TargetCatalog.orderedTargets(for: first.category)
@@ -101,7 +101,7 @@ public final class Engine: @unchecked Sendable {
 
     /// Tools available for the selection, in catalog order.
     public func tools(for inputs: [URL]) -> [ToolID] {
-        let files = expand(inputs)
+        let files = expand(inputs, limit: Self.capabilitySampleSize)
         let formats = Self.distinctFormats(files)
         guard let first = formats.first else { return [] }
         var ordered: [ToolID] = []
@@ -126,11 +126,16 @@ public final class Engine: @unchecked Sendable {
 
     // MARK: Inputs
 
-    /// Files plus the supported files inside any folders (recursively, skipping hidden items and packages).
-    public func expand(_ inputs: [URL]) -> [URL] {
+    /// Capability checks (wheel contents) look at this many files at most, so huge folders open instantly.
+    static let capabilitySampleSize = 500
+
+    /// Files plus the supported files inside any folders (recursively, skipping hidden items and packages),
+    /// stopping after `limit` files when given.
+    public func expand(_ inputs: [URL], limit: Int? = nil) -> [URL] {
         var result: [URL] = []
         let fm = FileManager.default
         for url in inputs {
+            if let limit, result.count >= limit { break }
             var isDirectory: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue, FileFormat.detect(url) == nil {
@@ -138,6 +143,7 @@ public final class Engine: @unchecked Sendable {
                                                options: [.skipsHiddenFiles, .skipsPackageDescendants])
                 while let item = enumerator?.nextObject() as? URL {
                     if FileFormat.detect(item) != nil { result.append(item) }
+                    if let limit, result.count >= limit { break }
                 }
             } else if FileFormat.detect(url) != nil {
                 result.append(url)
