@@ -7,7 +7,19 @@ Focus: **(1) a broad, reliable file converter** and **(2) image editing**. Anyth
 
 Legend: **P0** first build · **P1** next · **P2** later · `*` needs the ffmpeg engine (see §7)
 
-## Decisions (2026-10-19)
+## Decisions (2026-10-19, revised)
+- **UI:** every screen uses the tangerineformac.com style:
+  - soft off-white page, white rounded cards, orange chips, rounded labels
+  - presets instead of sliders; no stock form look
+- **Editor:** reduced to crop, rotate, flip and resize, plus save as a format at Small/Balanced/Best quality.
+  Adjustments, filters, background removal and straighten were removed from the UI.
+  - The ⌘ wheel keeps only simple edits: Edit…, Compress, Resize 50%, Fit 1080, Rotate, Flip, and Merge PDF for
+    multiple files.
+  - The other engine tools stay available in the CLI.
+- **Converter:** one Quality choice (Small/Balanced/Best) replaces the per-format options.
+  The advanced per-format options keep their defaults.
+
+## Decisions (2026-10-19, initial)
 - Image editing: **quick edits (⌘ wheel) + editor window**
 - v1 categories: **images, video, audio, PDF & documents**; data, subtitles and archives are deferred
 - **ffmpeg** used for formats macOS cannot encode natively

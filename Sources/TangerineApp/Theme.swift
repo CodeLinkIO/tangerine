@@ -13,6 +13,8 @@ enum Theme {
     static let line = Color.adaptive(light: 0xE6E6E6, dark: 0x343434)
     /// Fill for unselected chips and segmented controls.
     static let subtle = Color.adaptive(light: 0xF1F1F0, dark: 0x2D2D2D)
+    /// Selected segment in a `Segmented` control: lifts above the track in both appearances.
+    static let raised = Color.adaptive(light: 0xFFFFFF, dark: 0x464646)
     static let text = Color.adaptive(light: 0x292929, dark: 0xF2F2F2)
     static let muted = Color.adaptive(light: 0x777777, dark: 0x9C9C9C)
     static let faint = Color.adaptive(light: 0xA0A69D, dark: 0x6E6E6E)
@@ -123,7 +125,7 @@ struct Segmented<Value: Hashable>: View {
                         .frame(minWidth: 54, minHeight: 26)
                         .background {
                             if selected {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.card)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.raised)
                                     .shadow(color: .black.opacity(0.07), radius: 2, y: 1)
                             }
                         }

@@ -8,13 +8,21 @@ A native macOS menu-bar app inspired by [tangerineformac.com](https://tangerinef
 
 See [FEATURES.md](FEATURES.md) for the full spec and roadmap.
 
+The UI follows the tangerineformac.com look. Every screen uses the components in
+`Sources/TangerineApp/Theme.swift`:
+- off-white page with white rounded cards
+- orange format chips and pill segmented controls
+- keycap legends
+
+Light and dark mode are both supported.
+
 ## What's in v1
 
 | Area | Highlights |
 |---|---|
 | **Images** | **Inputs:** JPG, PNG, HEIC, WebP, AVIF, TIFF, BMP, GIF, SVG, ICO, ICNS, PSD, TGA, JPEG 2000, JPEG XL, EXR, camera RAW.<br>**Outputs:** JPG, PNG, HEIC, WebP, AVIF, TIFF, GIF, PDF, BMP, ICO, ICNS, JP2, TGA, plus **TXT via OCR**.<br>Animated GIF → WebP or MP4. |
-| **Quick edits** (⌘ wheel) | Compress (pngquant-style palette PNG, re-encoded JPG/HEIC), resize, rotate and flip (lossless for JPEG/HEIC/TIFF), remove background (Vision), enhance, mono, strip metadata and GPS, trim, square, copy text, app icon |
-| **Editor window** | Crop with aspect presets, straighten, adjustments, filters, background removal, resize, export with a live file-size estimate, undo/redo |
+| **Quick edits** (⌘ wheel) | Edit…, Compress (pngquant-style palette PNG, re-encoded JPG/HEIC), Resize 50%, Fit 1080, Rotate (lossless for JPEG/HEIC/TIFF), Flip, Merge into PDF |
+| **Editor window** | Kept simple: crop (Free, Original, Square, 4:3, 3:2, 16:9), rotate, flip, resize (25/50/75%, 1080/2048 px, custom), then save as JPG/PNG/HEIC/WebP… with Small/Balanced/Best quality and a live size estimate. Undo/redo |
 | **Video** | MP4, MOV, M4V, 3GP natively; MKV, WebM, AVI, WMV, FLV, MPG and MTS via ffmpeg. Outputs any of these plus GIF and audio extraction. Compress (HEVC), Mute |
 | **Audio** | MP3, M4A/AAC, ALAC, WAV, AIFF, FLAC, CAF, M4R ringtone, OGG, Opus, WMA |
 | **PDF** | → PNG/JPG/TIFF/HEIC (every page, 300 DPI); → TXT/MD/DOCX/RTF/HTML/EPUB with OCR for scans. Merge, split, compress |
@@ -30,6 +38,8 @@ There are 560+ conversion options. Run `tangerine engines` to see the count on y
 - **Finder:** right-click → Services → *Convert with Tangerine* / *Edit Image with Tangerine*.
 - **⌃⌥T:** opens the wheel for the current Finder selection. Pick a petal with the arrow keys and Return.
 - **CLI:** `tangerine convert photo.heic --to jpg --quality 80`, `tangerine tool compress *.png`, `tangerine formats file.pdf`.
+  The CLI also exposes the engine tools that the simplified UI hides: removeBackground, autoEnhance, grayscale,
+  stripMetadata, copyText, trimTransparent, makeSquare, makeIcon.
 
 ## Build and run
 
@@ -45,7 +55,8 @@ cp -R build/Tangerine.app /Applications/   # needed for Finder Services
 Tests: `swift test` (images, media, documents and engine routing). Engines that need ffmpeg or libwebp skip
 their tests when the tool isn't installed.
 
-Debug builds accept `TANGERINE_DEMO=wheel|tools|converter|settings|welcome|editor` with `TANGERINE_DEMO_FILE=<path>`.
+Debug builds accept `TANGERINE_DEMO=wheel|tools|converter|settings|welcome|editor|hud`, `TANGERINE_DEMO_FILE=<a:b>` and
+`TANGERINE_DEMO_DARK=1`.
 These open UI without any input events, for screenshots.
 
 ## Architecture
@@ -56,7 +67,7 @@ TangerineImage      ImageIO/Core Image engine, quick edits, EditRecipe pipeline,
 TangerineMedia      AVFoundation + afconvert + ffmpeg engines (video/audio), compress/mute
 TangerineDocuments  PDFKit rasterizing/extraction, Markdown, AppKit text formats, EPUB, PDF tools
 TangerineKit        Engine: routes (from → to) and tools to backends, batches, folders, progress, reports
-TangerineApp        menu-bar app: drag monitor, wheel, HUD, converter, editor, settings, onboarding
+TangerineApp        menu-bar app: Theme (design system), drag monitor, wheel, HUD, converter, editor, settings, onboarding
 TangerineCLI        `tangerine` command-line tool
 ```
 
