@@ -104,48 +104,54 @@ final class HUDController {
 
 struct HUDView: View {
     @ObservedObject var model: HUDModel
-    private let orange = Color(red: 0xF3 / 255, green: 0x5B / 255, blue: 0x28 / 255)
 
     var body: some View {
         HStack(spacing: 12) {
-            icon.frame(width: 28, height: 28)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(model.title).font(.system(size: 13, weight: .semibold, design: .rounded)).lineLimit(1)
+            leading.frame(width: 36, height: 36)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(model.title).font(Theme.label(13, weight: .semibold)).foregroundStyle(Theme.text).lineLimit(1)
                 if model.state == .working {
-                    ProgressView(value: model.progress).progressViewStyle(.linear).tint(orange)
+                    ProgressView(value: model.progress).progressViewStyle(.linear).tint(Theme.orange)
                 } else if !model.detail.isEmpty {
-                    Text(model.detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                    Text(model.detail).font(Theme.label(11.5, weight: .regular)).foregroundStyle(Theme.muted).lineLimit(2)
                 }
             }
             Spacer(minLength: 4)
             if model.state == .working, model.onCancel != nil {
-                Button { model.onCancel?() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                    .buttonStyle(.plain).help("Cancel")
+                IconButton(systemImage: "xmark", help: "Cancel", size: 24) { model.onCancel?() }
             } else if !model.outputs.isEmpty {
-                Button("Show") { model.reveal() }.controlSize(.small)
+                Button("Show") { model.reveal() }
+                    .buttonStyle(.plain).font(Theme.label(12.5, weight: .semibold)).foregroundStyle(Theme.orange)
             } else {
-                Button { model.dismiss() } label: { Image(systemName: "xmark").foregroundStyle(.secondary) }
-                    .buttonStyle(.plain)
+                IconButton(systemImage: "xmark", size: 24) { model.dismiss() }
             }
         }
         .padding(.horizontal, 14)
         .frame(width: 360, height: 64)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(.white.opacity(0.12)))
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.line))
         .contentShape(Rectangle())
         .onTapGesture { model.reveal() }
     }
 
-    @ViewBuilder private var icon: some View {
+    @ViewBuilder private var leading: some View {
         switch model.state {
         case .working:
             ProgressView().controlSize(.small)
         case .success:
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 22)).foregroundStyle(orange)
+            if let file = model.outputs.first {
+                FileThumbnail(url: file, size: 36)
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 14)).foregroundStyle(.white, Theme.orange)
+                            .offset(x: 4, y: 4)
+                    }
+            } else {
+                Image(systemName: "checkmark.circle.fill").font(.system(size: 24)).foregroundStyle(Theme.orange)
+            }
         case .failure:
-            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 20)).foregroundStyle(.yellow)
+            Image(systemName: "exclamationmark.circle.fill").font(.system(size: 24)).foregroundStyle(Theme.orange)
         case .info:
-            Image(systemName: "info.circle.fill").font(.system(size: 22)).foregroundStyle(.secondary)
+            Image(systemName: "info.circle.fill").font(.system(size: 24)).foregroundStyle(Theme.faint)
         }
     }
 }

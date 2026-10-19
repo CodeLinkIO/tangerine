@@ -4,22 +4,17 @@ import TangerineKit
 import UniformTypeIdentifiers
 
 @MainActor
-final class ConverterWindowController: NSWindowController, NSWindowDelegate {
+final class ConverterWindowController: NSWindowController {
     static let shared = ConverterWindowController()
 
     let model = ConverterModel()
 
     private init() {
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 760, height: 520),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                              backing: .buffered, defer: false)
-        window.title = "Converter"
-        window.minSize = CGSize(width: 620, height: 380)
-        window.isReleasedWhenClosed = false
+        let window = NSWindow.themed(size: CGSize(width: 820, height: 600), title: "Convert")
+        window.minSize = CGSize(width: 640, height: 460)
         window.setFrameAutosaveName("ConverterWindow")
         super.init(window: window)
         window.contentView = NSHostingView(rootView: ConverterView(model: model))
-        window.delegate = self
         if window.frame.origin == .zero { window.center() }
     }
 
@@ -37,117 +32,110 @@ final class ConverterWindowController: NSWindowController, NSWindowDelegate {
 struct ConverterView: View {
     @ObservedObject var model: ConverterModel
     @State private var isTargeted = false
-    @State private var showOptions = false
-    private let orange = Color(red: 0xF3 / 255, green: 0x5B / 255, blue: 0x28 / 255)
 
     var body: some View {
         VStack(spacing: 0) {
+            header
             if model.items.isEmpty {
-                emptyState
+                ConverterEmptyState { choose() }
             } else {
-                list
+                ScrollView {
+                    VStack(spacing: 10) {
+                        if model.items.count > 1, !model.allTargets.isEmpty { convertAllCard }
+                        ForEach(model.items) { item in
+                            ConverterFileCard(item: item, featured: model.featuredTargets(for: item),
+                                              onTarget: { model.setTarget($0, for: item.id) },
+                                              onRemove: { model.remove([item.id]) })
+                        }
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 6)
+                }
             }
-            Divider()
             footer
         }
-        .frame(minWidth: 620, minHeight: 380)
+        .background(Theme.page)
+        .frame(minWidth: 640, minHeight: 460)
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             Task { @MainActor in model.add(await Self.urls(from: providers)) }
             return true
         }
         .overlay {
             if isTargeted {
-                RoundedRectangle(cornerRadius: 12).strokeBorder(orange, lineWidth: 3).padding(6).allowsHitTesting(false)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(Theme.orange, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                    .padding(10)
+                    .allowsHitTesting(false)
             }
         }
     }
 
     // MARK: Sections
 
-    private var emptyState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "arrow.down.doc").font(.system(size: 46, weight: .light)).foregroundStyle(orange)
-            Text("Drop files or folders to convert").font(.title3.weight(.semibold))
-            Text("Images, video, audio, PDFs and documents. Everything stays on your Mac.")
-                .foregroundStyle(.secondary)
-            Button("Choose Files…") { choose() }.controlSize(.large)
+    private var header: some View {
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Convert").font(Theme.title(26)).tracking(-0.8).foregroundStyle(Theme.text)
+                Text("Drop files here. Everything stays on your Mac.").font(Theme.label(13, weight: .regular))
+                    .foregroundStyle(Theme.muted)
+            }
+            Spacer()
+            if !model.items.isEmpty {
+                Button { choose() } label: { Label("Add Files", systemImage: "plus") }.buttonStyle(.secondary)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.top, 20)
+        .padding(.horizontal, 28)
+        .padding(.top, 34)
+        .padding(.bottom, 14)
     }
 
-    private var list: some View {
-        List(selection: $model.selection) {
-            ForEach(model.items) { item in
-                ConverterRow(item: item, orange: orange) { target in model.setTarget(target, for: item.id) }
-                    .tag(item.id)
-                    .contextMenu {
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
-                        if item.format.category == .image {
-                            Button("Edit Image…") { JobRunner.shared.openEditor(item.url) }
-                        }
-                        Divider()
-                        Button("Remove") { model.remove(model.selection.contains(item.id) ? model.selection : [item.id]) }
+    private var convertAllCard: some View {
+        Card(padding: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                SectionLabel("Convert all to")
+                ChipFlow(spacing: 6) {
+                    ForEach(model.allTargets.prefix(10), id: \.self) { target in
+                        let allSet = model.items.filter { $0.targets.contains(target) }.allSatisfy { $0.target == target }
+                        Chip(title: target.shortName, isSelected: allSet) { model.setTargetForAll(target) }
                     }
+                }
             }
-            .onDelete { offsets in model.remove(Set(offsets.map { model.items[$0].id })) }
         }
-        .listStyle(.inset)
-        .onDeleteCommand { model.remove(model.selection) }
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            Button { choose() } label: { Image(systemName: "plus") }.help("Add files")
-            Menu("Set all to") {
-                ForEach(model.allTargets, id: \.self) { target in
-                    Button(target.displayName) { model.setTargetForAll(target) }
-                }
+        HStack(spacing: 14) {
+            HStack(spacing: 8) {
+                Text("Quality").font(Theme.label(12.5)).foregroundStyle(Theme.muted)
+                Segmented(options: QualityPreset.allCases, selection: $model.quality) { $0.title }
             }
-            .fixedSize()
-            .disabled(model.items.isEmpty)
-            Menu("Tools") {
-                ForEach(model.commonTools, id: \.self) { tool in
-                    Button { model.runTool(tool) } label: { Label(tool.title, systemImage: tool.symbol) }
-                }
-            }
-            .fixedSize()
-            .disabled(model.items.isEmpty || model.commonTools.isEmpty || model.isRunning)
-            Button { showOptions.toggle() } label: { Label("Options", systemImage: "slider.horizontal.3") }
-                .popover(isPresented: $showOptions, arrowEdge: .top) {
-                    OptionsForm(options: $model.options).frame(width: 380, height: 460)
-                }
-            Spacer()
             Menu {
                 Button("Next to Originals") { model.outputFolder = nil }
                 Button("Choose Folder…") { chooseFolder() }
             } label: {
                 Label(model.outputFolder?.lastPathComponent ?? "Next to originals", systemImage: "folder")
+                    .font(Theme.label(12.5))
             }
+            .menuStyle(.borderlessButton)
             .fixedSize()
+            .foregroundStyle(Theme.muted)
+            Spacer()
+            if model.items.contains(where: \.isDone), !model.isRunning {
+                Button("Clear Done") { model.clearFinished() }.buttonStyle(.secondary)
+            }
             if model.isRunning {
-                Button("Stop") { model.cancel() }
+                Button("Stop") { model.cancel() }.buttonStyle(.secondary)
             } else {
-                Button(model.items.contains(where: { if case .done = $0.status { true } else { false } }) ? "Clear Done" : "Clear") {
-                    if model.items.contains(where: { if case .done = $0.status { true } else { false } }) {
-                        model.clearFinished()
-                    } else {
-                        model.remove(Set(model.items.map(\.id)))
-                    }
-                }
-                .disabled(model.items.isEmpty)
+                Button(model.pendingCount > 1 ? "Convert \(model.pendingCount) files" : "Convert") { model.convertAll() }
+                    .buttonStyle(.primary)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(model.pendingCount == 0)
             }
-            Button {
-                model.convertAll()
-            } label: {
-                Text(model.pendingCount > 1 ? "Convert \(model.pendingCount)" : "Convert").frame(minWidth: 70)
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(.borderedProminent)
-            .tint(orange)
-            .disabled(model.isRunning || model.pendingCount == 0)
         }
-        .padding(12)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 18)
+        .background(Theme.page)
+        .overlay(alignment: .top) { Hairline() }
     }
 
     // MARK: Actions
@@ -181,59 +169,149 @@ struct ConverterView: View {
     }
 }
 
-struct ConverterRow: View {
-    let item: ConverterModel.Item
-    let orange: Color
-    let onTarget: (FileFormat) -> Void
+struct ConverterEmptyState: View {
+    let onChoose: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path)).resizable().frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.url.lastPathComponent).lineLimit(1).truncationMode(.middle)
-                Text("\(item.format.displayName) · \(ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file))")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 12)
-            status.frame(width: 190, alignment: .trailing)
-            Image(systemName: "arrow.right").foregroundStyle(.tertiary)
-            if item.targets.isEmpty {
-                Text("No conversions").foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
-            } else {
-                Picker("", selection: Binding(get: { item.target ?? item.targets[0] }, set: onTarget)) {
-                    ForEach(item.targets, id: \.self) { Text($0.displayName).tag($0) }
+        VStack(spacing: 14) {
+            Image(nsImage: TangerineArt.appIcon(size: 84)).resizable().frame(width: 84, height: 84)
+            Text("Drop files to convert").font(Theme.title(22)).tracking(-0.6).foregroundStyle(Theme.text)
+            Text("Images, video, audio, PDFs and documents").font(Theme.label(13, weight: .regular))
+                .foregroundStyle(Theme.muted)
+            Button("Choose Files…", action: onChoose).buttonStyle(.secondary).padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Theme.line, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+        )
+        .padding(.horizontal, 28)
+        .padding(.bottom, 18)
+    }
+}
+
+struct ConverterFileCard: View {
+    let item: ConverterModel.Item
+    let featured: [FileFormat]
+    let onTarget: (FileFormat) -> Void
+    let onRemove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Card(padding: 14) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    FileThumbnail(url: item.url, size: 44)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.url.lastPathComponent).font(Theme.label(13.5)).foregroundStyle(Theme.text)
+                            .lineLimit(1).truncationMode(.middle)
+                        Text("\(item.format.displayName) · \(ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file))")
+                            .font(Theme.label(11.5, weight: .regular)).foregroundStyle(Theme.muted)
+                    }
+                    Spacer(minLength: 8)
+                    status
+                    IconButton(systemImage: "xmark", help: "Remove", size: 24, action: onRemove)
+                        .opacity(hovering ? 1 : 0)
                 }
-                .labelsHidden()
-                .frame(width: 110)
+                if item.targets.isEmpty {
+                    Text("No conversions for this file").font(Theme.label(12, weight: .regular)).foregroundStyle(Theme.muted)
+                } else {
+                    ChipFlow(spacing: 6) {
+                        ForEach(featured, id: \.self) { target in
+                            Chip(title: target.shortName, isSelected: item.target == target) { onTarget(target) }
+                        }
+                        let others = item.targets.filter { !featured.contains($0) }
+                        if !others.isEmpty {
+                            Menu {
+                                ForEach(others, id: \.self) { target in Button(target.displayName) { onTarget(target) } }
+                            } label: {
+                                Text("More").font(Theme.rounded(12.5)).foregroundStyle(Theme.text)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.visible)
+                            .fixedSize()
+                            .padding(.horizontal, 10)
+                            .frame(height: 28)
+                            .background(Capsule().fill(Theme.subtle))
+                        }
+                    }
+                }
+                if case let .working(progress) = item.status {
+                    ProgressView(value: progress).progressViewStyle(.linear).tint(Theme.orange)
+                }
             }
         }
-        .padding(.vertical, 3)
+        .onHover { hovering = $0 }
     }
 
     @ViewBuilder private var status: some View {
         switch item.status {
-        case .ready:
+        case .ready, .working:
             EmptyView()
-        case let .working(progress):
-            ProgressView(value: progress).tint(orange).frame(width: 120)
         case let .done(outputs, summary):
             HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(orange)
-                Text(summary).font(.caption).lineLimit(1).truncationMode(.middle)
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.orange)
+                Text(summary).font(Theme.label(12)).foregroundStyle(Theme.text).lineLimit(1).truncationMode(.middle)
                 if !outputs.isEmpty {
-                    Button { NSWorkspace.shared.activateFileViewerSelecting(outputs) } label: {
-                        Image(systemName: "magnifyingglass")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Show in Finder")
+                    Button("Show") { NSWorkspace.shared.activateFileViewerSelecting(outputs) }
+                        .buttonStyle(.plain).font(Theme.label(12, weight: .semibold)).foregroundStyle(Theme.orange)
                 }
             }
+            .frame(maxWidth: 300, alignment: .trailing)
         case let .failed(message):
             HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-                Text(message).font(.caption).lineLimit(2).foregroundStyle(.secondary)
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(Theme.orange)
+                Text(message).font(Theme.label(12, weight: .regular)).foregroundStyle(Theme.muted).lineLimit(2)
             }
+            .frame(maxWidth: 300, alignment: .trailing)
             .help(message)
         }
+    }
+}
+
+extension ConverterModel.Item {
+    var isDone: Bool { if case .done = status { true } else { false } }
+}
+
+/// Wrapping row of chips.
+struct ChipFlow: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(subviews, width: proposal.width ?? .infinity)
+        let height = rows.last.map { $0.y + $0.height } ?? 0
+        let width = rows.map(\.width).max() ?? 0
+        return CGSize(width: proposal.width ?? width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(subviews, width: bounds.width) {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: bounds.minY + row.y + (row.height - size.height) / 2),
+                                      proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+        }
+    }
+
+    private struct FlowRow { var indices: [Int] = []; var y: CGFloat = 0; var width: CGFloat = 0; var height: CGFloat = 0 }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> [FlowRow] {
+        var rows = [FlowRow()]
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            if !rows[rows.count - 1].indices.isEmpty, rows[rows.count - 1].width + spacing + size.width > width {
+                let last = rows[rows.count - 1]
+                rows.append(FlowRow(y: last.y + last.height + spacing))
+            }
+            var row = rows[rows.count - 1]
+            row.width += (row.indices.isEmpty ? 0 : spacing) + size.width
+            row.height = max(row.height, size.height)
+            row.indices.append(index)
+            rows[rows.count - 1] = row
+        }
+        return rows.filter { !$0.indices.isEmpty }
     }
 }

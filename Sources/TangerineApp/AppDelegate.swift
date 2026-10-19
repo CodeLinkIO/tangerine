@@ -51,12 +51,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     #if DEBUG
-    /// Debug builds only: TANGERINE_DEMO=wheel|tools|converter|settings|welcome [TANGERINE_DEMO_FILE=path]
+    /// Debug builds only: TANGERINE_DEMO=wheel|tools|converter|settings|welcome|editor|hud [TANGERINE_DEMO_FILE=a:b] [TANGERINE_DEMO_DARK=1]
     /// opens UI without input events, for screenshots and manual checks.
     private func runDemoHooks() {
         let env = ProcessInfo.processInfo.environment
         guard let demo = env["TANGERINE_DEMO"] else { return }
-        let files = env["TANGERINE_DEMO_FILE"].map { [URL(fileURLWithPath: $0)] } ?? []
+        let files = (env["TANGERINE_DEMO_FILE"] ?? "").split(separator: ":").map { URL(fileURLWithPath: String($0)) }
+        if env["TANGERINE_DEMO_DARK"] == "1" { NSApp.appearance = NSAppearance(named: .darkAqua) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             switch demo {
             case "wheel", "tools":
@@ -67,6 +68,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "settings": SettingsWindowController.shared.show()
             case "welcome": WelcomeWindowController.shared.show()
             case "editor": if let file = files.first { JobRunner.shared.openEditor(file) }
+            case "hud":
+                HUDController.shared.present(title: "Converting…", detail: "").progress = 0.6
+                HUDController.shared.present(title: "", detail: "")
+                    .finish(.success, title: "Saved \(files.first?.lastPathComponent ?? "file") · −63%", outputs: files)
             default: break
             }
         }

@@ -23,13 +23,13 @@ final class ConverterModel: ObservableObject {
 
     @Published var items: [Item] = []
     @Published var selection = Set<Item.ID>()
-    @Published var options: ConversionOptions
+    @Published var quality: QualityPreset
     @Published var outputFolder: URL?
     @Published private(set) var isRunning = false
     private var task: Task<Void, Never>?
 
     init() {
-        options = Preferences.shared.options
+        quality = Preferences.shared.quality
         outputFolder = Preferences.shared.outputFolder
     }
 
@@ -72,26 +72,21 @@ final class ConverterModel: ObservableObject {
         }
     }
 
-    /// Every target at least one item supports, most common first.
+    /// Targets shared by several items, in the dominant file type's natural order (JPG, PNG, HEIC…).
     var allTargets: [FileFormat] {
         var counts: [FileFormat: Int] = [:]
-        var order: [FileFormat] = []
+        var categories: [FormatCategory: Int] = [:]
         for item in items {
-            for target in item.targets {
-                if counts[target] == nil { order.append(target) }
-                counts[target, default: 0] += 1
-            }
+            categories[item.format.category, default: 0] += 1
+            for target in item.targets { counts[target, default: 0] += 1 }
         }
-        return order.sorted { counts[$0]! > counts[$1]! }
-    }
-
-    /// Tools that apply to every item in scope.
-    var commonTools: [ToolID] {
-        Engine.shared.tools(for: scope.map(\.url)).filter { !$0.isInteractive }
-    }
-
-    private var scope: [Item] {
-        selection.isEmpty ? items : items.filter { selection.contains($0.id) }
+        guard let dominant = categories.max(by: { $0.value < $1.value })?.key else { return [] }
+        var ordered = TargetCatalog.orderedTargets(for: dominant)
+        for category in FormatCategory.allCases where category != dominant {
+            ordered += TargetCatalog.orderedTargets(for: category).filter { !ordered.contains($0) }
+        }
+        let minimum = items.count > 1 ? 2 : 1
+        return ordered.filter { (counts[$0] ?? 0) >= minimum }
     }
 
     var pendingCount: Int {
@@ -105,10 +100,17 @@ final class ConverterModel: ObservableObject {
 
     // MARK: Running
 
+    /// The few formats shown as chips on a card; the rest live under "More".
+    func featuredTargets(for item: Item) -> [FileFormat] {
+        var featured = Array(Preferences.shared.wheelTargets(category: item.format.category, available: item.targets).prefix(5))
+        if let target = item.target, !featured.contains(target) { featured.append(target) }
+        return featured
+    }
+
     func convertAll() {
         guard !isRunning else { return }
         isRunning = true
-        let options = options
+        let options = quality.apply(to: Preferences.shared.options)
         let folder = outputFolder
         task = Task { @MainActor in
             for item in items {
@@ -131,37 +133,6 @@ final class ConverterModel: ObservableObject {
                     finish(id, report: report)
                 } catch {
                     update(id) { $0.status = .failed(error.localizedDescription) }
-                }
-            }
-            isRunning = false
-        }
-    }
-
-    func runTool(_ tool: ToolID) {
-        guard !isRunning else { return }
-        let targets = scope
-        isRunning = true
-        let options = options
-        let folder = outputFolder
-        task = Task { @MainActor in
-            if tool.combinesInputs {
-                targets.forEach { item in update(item.id) { $0.status = .working(0) } }
-                do {
-                    let report = try await Engine.shared.run(tool, on: targets.map(\.url), options: options, outputDirectory: folder)
-                    targets.forEach { finish($0.id, report: report) }
-                } catch {
-                    targets.forEach { item in update(item.id) { $0.status = .failed(error.localizedDescription) } }
-                }
-            } else {
-                for item in targets {
-                    guard !Task.isCancelled else { break }
-                    update(item.id) { $0.status = .working(0) }
-                    do {
-                        let report = try await Engine.shared.run(tool, on: [item.url], options: options, outputDirectory: folder)
-                        finish(item.id, report: report)
-                    } catch {
-                        update(item.id) { $0.status = .failed(error.localizedDescription) }
-                    }
                 }
             }
             isRunning = false

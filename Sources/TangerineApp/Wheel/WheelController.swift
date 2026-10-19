@@ -41,7 +41,6 @@ final class WheelController: NSObject, NSWindowDelegate {
 
     private let panel = WheelPanel()
     private let wheel = WheelView(frame: CGRect(origin: .zero, size: WheelView.size))
-    private let glass = NSVisualEffectView(frame: CGRect(origin: .zero, size: WheelView.size))
     private var files: [URL] = []
     private(set) var interaction: Interaction = .drag
     private(set) var mode: WheelMode = .convert
@@ -53,12 +52,7 @@ final class WheelController: NSObject, NSWindowDelegate {
         super.init()
         let container = NSView(frame: CGRect(origin: .zero, size: WheelView.size))
         container.wantsLayer = true
-        glass.material = .popover
-        glass.blendingMode = .behindWindow
-        glass.state = .active
-        container.addSubview(glass)
         container.addSubview(wheel)
-        wheel.glass = glass
         panel.contentView = container
         panel.delegate = self
 
@@ -83,6 +77,7 @@ final class WheelController: NSObject, NSWindowDelegate {
         let prefs = Preferences.shared
         wheel.keys = WheelMode.allCases.map { (prefs.key(for: $0), $0) }
         wheel.subtitle = Self.summary(of: files)
+        loadThumbnail(for: files)
 
         if !wasVisible {
             let origin = Self.frameOrigin(centeredAt: point ?? NSEvent.mouseLocation, wheelCenter: wheel.wheelCenter)
@@ -101,6 +96,19 @@ final class WheelController: NSObject, NSWindowDelegate {
             panel.allowsKey = true
             panel.makeKeyAndOrderFront(nil)
             panel.makeFirstResponder(wheel)
+        }
+    }
+
+    private var thumbnailFor: URL?
+
+    /// Shows the first file's Quick Look thumbnail in the center of the wheel.
+    private func loadThumbnail(for files: [URL]) {
+        guard let first = files.first, first != thumbnailFor else { return }
+        thumbnailFor = first
+        wheel.thumbnail = nil
+        Task { @MainActor in
+            let image = await FileThumbnail.thumbnail(for: first, size: 76)
+            if self.thumbnailFor == first { self.wheel.thumbnail = image }
         }
     }
 

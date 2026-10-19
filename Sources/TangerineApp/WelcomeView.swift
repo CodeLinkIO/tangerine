@@ -7,12 +7,7 @@ final class WelcomeWindowController: NSWindowController {
     static let shared = WelcomeWindowController()
 
     private init() {
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 620, height: 470),
-                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
-        window.isReleasedWhenClosed = false
+        let window = NSWindow.themed(size: CGSize(width: 640, height: 600), title: "Welcome", resizable: false)
         super.init(window: window)
         window.contentView = NSHostingView(rootView: WelcomeView(sample: Self.makeSampleFile()) { [weak self] in
             Preferences.shared.hasSeenWelcome = true
@@ -61,49 +56,64 @@ struct WelcomeView: View {
     let sample: URL?
     let onDone: () -> Void
     @ObservedObject private var prefs = Preferences.shared
-    private let orange = Color(red: 0xF3 / 255, green: 0x5B / 255, blue: 0x28 / 255)
 
     var body: some View {
-        VStack(spacing: 18) {
-            Image(nsImage: TangerineArt.appIcon(size: 72)).resizable().frame(width: 72, height: 72)
-            VStack(spacing: 6) {
-                Text("The zero-click file converter").font(.system(size: 24, weight: .bold, design: .rounded))
-                Text("Drag a file, tap a key, drop. Everything happens on your Mac.")
-                    .foregroundStyle(.secondary)
-            }
-            HStack(alignment: .top, spacing: 26) {
-                step(1, "Drag", "Start dragging any file, from Finder or right here.")
-                step(2, "Tap \(prefs.convertKey.symbol) or \(prefs.toolsKey.symbol)",
-                     "\(prefs.convertKey.name) converts, \(prefs.toolsKey.name) shows edits and tools.")
-                step(3, "Drop", "Drop on a petal. The result is saved next to the original.")
-            }
-            .padding(.horizontal, 30)
+        VStack(spacing: 0) {
+            Image(nsImage: TangerineArt.appIcon(size: 64)).resizable().frame(width: 64, height: 64)
+                .padding(.bottom, 18)
+            Text("The zero-click\noffline file converter.")
+                .font(.system(size: 40, weight: .medium)).tracking(-1.1)
+                .multilineTextAlignment(.center).foregroundStyle(Theme.text)
+            Text("Drag a file, tap \(prefs.convertKey.symbol), and drop. Everything happens on your Mac.")
+                .font(Theme.label(14, weight: .regular)).foregroundStyle(Theme.muted).padding(.top, 12)
 
-            if let sample {
-                VStack(spacing: 6) {
-                    DraggableFile(url: sample).frame(width: 96, height: 96)
-                    Text("Try it: drag this file, then tap \(prefs.convertKey.symbol)").font(.caption).foregroundStyle(.secondary)
+            Card(padding: 0, radius: 20) {
+                HStack(spacing: 0) {
+                    VStack(spacing: 8) {
+                        if let sample {
+                            DraggableFile(url: sample).frame(width: 84, height: 84)
+                            Text(sample.lastPathComponent).font(Theme.label(11.5)).foregroundStyle(Theme.text)
+                            Text("Drag this file").font(Theme.label(11, weight: .regular)).foregroundStyle(Theme.muted)
+                        }
+                    }
+                    .frame(width: 200)
+                    Rectangle().fill(Theme.line).frame(width: 1).padding(.vertical, 22)
+                    VStack(alignment: .leading, spacing: 14) {
+                        step(KeyCap(symbol: prefs.convertKey.symbol, name: prefs.convertKey.name), "Convert", "JPG, PNG, WebP, MP4, MP3, PDF…")
+                        step(KeyCap(symbol: prefs.toolsKey.symbol, name: prefs.toolsKey.name), "Edit", "Crop, rotate, resize, compress")
+                        step(Image(systemName: "arrow.down.circle.fill").font(.system(size: 22)).foregroundStyle(Theme.orange),
+                             "Drop on a petal", "Saved next to the original")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 26)
+                    .padding(.trailing, 12)
                 }
+                .frame(height: 190)
             }
+            .padding(.top, 30)
+
             HStack {
-                Button("Open Converter") { ConverterWindowController.shared.show() }
+                Button("Open Converter") { ConverterWindowController.shared.show() }.buttonStyle(.secondary)
                 Spacer()
-                Button("Get Started", action: onDone).keyboardShortcut(.defaultAction).buttonStyle(.borderedProminent).tint(orange)
+                Button("Get Started", action: onDone).buttonStyle(.primary).keyboardShortcut(.defaultAction)
             }
-            .padding(.horizontal, 30)
+            .padding(.top, 26)
         }
-        .padding(.vertical, 26)
-        .frame(width: 620, height: 470)
+        .padding(.horizontal, 44)
+        .padding(.top, 36)
+        .padding(.bottom, 30)
+        .frame(width: 640, height: 600)
+        .background(Theme.page)
     }
 
-    private func step(_ number: Int, _ title: String, _ detail: String) -> some View {
-        VStack(spacing: 6) {
-            Text("\(number)").font(.system(size: 13, weight: .bold, design: .rounded)).foregroundStyle(.white)
-                .frame(width: 24, height: 24).background(Circle().fill(orange))
-            Text(title).font(.system(size: 15, weight: .semibold, design: .rounded))
-            Text(detail).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+    private func step(_ icon: some View, _ title: String, _ detail: String) -> some View {
+        HStack(spacing: 12) {
+            icon.frame(width: 104, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(Theme.label(13.5, weight: .semibold)).foregroundStyle(Theme.text)
+                Text(detail).font(Theme.label(11.5, weight: .regular)).foregroundStyle(Theme.muted)
+            }
         }
-        .frame(maxWidth: .infinity)
     }
 }
 

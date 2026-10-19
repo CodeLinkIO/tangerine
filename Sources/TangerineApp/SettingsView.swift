@@ -7,10 +7,7 @@ final class SettingsWindowController: NSWindowController {
     static let shared = SettingsWindowController()
 
     private init() {
-        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 560, height: 520),
-                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Tangerine Settings"
-        window.isReleasedWhenClosed = false
+        let window = NSWindow.themed(size: CGSize(width: 600, height: 620), title: "Settings", resizable: false)
         super.init(window: window)
         window.contentView = NSHostingView(rootView: SettingsView(prefs: .shared))
         window.center()
@@ -26,17 +23,38 @@ final class SettingsWindowController: NSWindowController {
     }
 }
 
+private enum SettingsTab: String, CaseIterable {
+    case general = "General", wheel = "Wheel", engines = "Engines"
+}
+
 struct SettingsView: View {
     @ObservedObject var prefs: Preferences
+    @State private var tab: SettingsTab = .general
 
     var body: some View {
-        TabView {
-            GeneralSettings(prefs: prefs).tabItem { Label("General", systemImage: "gearshape") }
-            WheelSettings(prefs: prefs).tabItem { Label("Wheel", systemImage: "circle.circle") }
-            OptionsForm(options: $prefs.options).tabItem { Label("Defaults", systemImage: "slider.horizontal.3") }
-            EngineSettings().tabItem { Label("Engines", systemImage: "cpu") }
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center) {
+                Text("Settings").font(Theme.title(24)).tracking(-0.7).foregroundStyle(Theme.text)
+                Spacer()
+                Segmented(options: SettingsTab.allCases, selection: $tab) { $0.rawValue }
+            }
+            ScrollView {
+                Group {
+                    switch tab {
+                    case .general: GeneralSettings(prefs: prefs)
+                    case .wheel: WheelSettings(prefs: prefs)
+                    case .engines: EngineSettings()
+                    }
+                }
+                .padding(.bottom, 24)
+            }
+            .scrollIndicators(.never)
         }
-        .frame(width: 560, height: 520)
+        .padding(.horizontal, 28)
+        .padding(.top, 40)
+        .frame(width: 600, height: 620, alignment: .top)
+        .background(Theme.page)
+        .tint(Theme.orange)
     }
 }
 
@@ -44,42 +62,66 @@ private struct GeneralSettings: View {
     @ObservedObject var prefs: Preferences
 
     var body: some View {
-        Form {
-            Section("Drag wheel") {
-                Toggle("Open the wheel while dragging files", isOn: $prefs.dragWheelEnabled)
-                keyPicker("Convert wheel", selection: $prefs.convertKey, other: prefs.toolsKey)
-                keyPicker("Edit wheel", selection: $prefs.toolsKey, other: prefs.convertKey)
-                Text("Start dragging a file, tap the key, then drop on a petal. The wheel stays open until you drop.")
-                    .font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 14) {
+            Card {
+                VStack(spacing: 4) {
+                    Row(title: "Open the wheel while dragging", detail: "Drag a file, tap a key, drop on a petal.") {
+                        Toggle("", isOn: $prefs.dragWheelEnabled).toggleStyle(.switch).labelsHidden()
+                    }
+                    Hairline()
+                    Row(title: "Convert key") { keyChoice($prefs.convertKey, other: prefs.toolsKey) }
+                    Hairline()
+                    Row(title: "Edit key") { keyChoice($prefs.toolsKey, other: prefs.convertKey) }
+                }
             }
-            Section("Saving") {
-                LabeledContent("Save results") {
-                    HStack {
-                        Text(prefs.outputFolder?.path(percentEncoded: false) ?? "Next to the original")
-                            .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
-                        Button("Choose…") { chooseFolder() }
-                        if prefs.outputFolder != nil { Button("Reset") { prefs.outputFolder = nil } }
+            Card {
+                VStack(spacing: 4) {
+                    Row(title: "Quality", detail: "Used by the wheel and as the Converter default.") {
+                        Segmented(options: QualityPreset.allCases, selection: $prefs.quality) { $0.title }
+                    }
+                    Hairline()
+                    Row(title: "Save results", detail: prefs.outputFolder?.path(percentEncoded: false) ?? "Next to the original file") {
+                        HStack(spacing: 6) {
+                            if prefs.outputFolder != nil {
+                                Button("Reset") { prefs.outputFolder = nil }.buttonStyle(.secondary)
+                            }
+                            Button("Change…") { chooseFolder() }.buttonStyle(.secondary)
+                        }
+                    }
+                    Hairline()
+                    Row(title: "Show results in Finder") {
+                        Toggle("", isOn: $prefs.revealInFinder).toggleStyle(.switch).labelsHidden()
+                    }
+                    Hairline()
+                    Row(title: "Move originals to the Trash", detail: "After a successful conversion.") {
+                        Toggle("", isOn: $prefs.replaceOriginals).toggleStyle(.switch).labelsHidden()
                     }
                 }
-                Toggle("Reveal results in Finder", isOn: $prefs.revealInFinder)
-                Toggle("Move originals to the Trash after converting", isOn: $prefs.replaceOriginals)
             }
-            Section("Shortcuts") {
-                Toggle("⌃⌥T opens the wheel for the Finder selection", isOn: $prefs.finderShortcutEnabled)
-                Text("Finder → right-click → Services → “Convert with Tangerine” also works.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section {
-                Toggle("Launch at login", isOn: Binding(get: { prefs.launchAtLogin }, set: { prefs.launchAtLogin = $0 }))
+            Card {
+                VStack(spacing: 4) {
+                    Row(title: "⌃⌥T converts the Finder selection", detail: "Or right-click → Services → Convert with Tangerine.") {
+                        Toggle("", isOn: $prefs.finderShortcutEnabled).toggleStyle(.switch).labelsHidden()
+                    }
+                    Hairline()
+                    Row(title: "Open at login") {
+                        Toggle("", isOn: Binding(get: { prefs.launchAtLogin }, set: { prefs.launchAtLogin = $0 }))
+                            .toggleStyle(.switch).labelsHidden()
+                    }
+                }
             }
         }
-        .formStyle(.grouped)
     }
 
-    private func keyPicker(_ title: String, selection: Binding<ModifierKey>, other: ModifierKey) -> some View {
-        Picker(title, selection: selection) {
+    private func keyChoice(_ selection: Binding<ModifierKey>, other: ModifierKey) -> some View {
+        HStack(spacing: 6) {
             ForEach(ModifierKey.allCases) { key in
-                Text("\(key.symbol) \(key.name)").tag(key).disabled(key == other)
+                Button { selection.wrappedValue = key } label: {
+                    KeyCap(symbol: key.symbol, name: key.name, isActive: selection.wrappedValue == key)
+                }
+                .buttonStyle(.plain)
+                .disabled(key == other)
+                .opacity(key == other ? 0.35 : 1)
             }
         }
     }
@@ -98,35 +140,46 @@ private struct WheelSettings: View {
     @ObservedObject var prefs: Preferences
 
     var body: some View {
-        Form {
-            Text("Choose up to \(TargetCatalog.wheelCapacity) formats per kind of file. Everything else stays one tap away under “More…”.")
-                .font(.callout).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Choose up to \(TargetCatalog.wheelCapacity) formats per kind of file. The rest stay under “More…”.")
+                .font(Theme.label(12.5, weight: .regular)).foregroundStyle(Theme.muted)
             ForEach(FormatCategory.allCases, id: \.self) { category in
-                Section(category.title) {
-                    let available = Self.available(for: category)
-                    let pinned = prefs.pinnedTargets[category] ?? Array(available.prefix(TargetCatalog.wheelCapacity))
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: 6) {
-                        ForEach(available, id: \.self) { format in
-                            Toggle(format.shortName, isOn: Binding(
-                                get: { pinned.contains(format) },
-                                set: { on in toggle(format, on: on, category: category, current: pinned, available: available) }
-                            ))
-                            .toggleStyle(.checkbox)
-                            .disabled(!pinned.contains(format) && pinned.count >= TargetCatalog.wheelCapacity)
+                let available = Self.available(for: category)
+                let pinned = prefs.pinnedTargets[category] ?? Array(available.prefix(TargetCatalog.wheelCapacity))
+                Card(padding: 14) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            SectionLabel(category.title)
+                            Spacer()
+                            if prefs.pinnedTargets[category] != nil {
+                                Button("Reset") { prefs.pinnedTargets[category] = nil }
+                                    .buttonStyle(.plain).font(Theme.label(12, weight: .semibold)).foregroundStyle(Theme.orange)
+                            }
                         }
-                    }
-                    if prefs.pinnedTargets[category] != nil {
-                        Button("Use Defaults") { prefs.pinnedTargets[category] = nil }
+                        ChipFlow(spacing: 6) {
+                            ForEach(available, id: \.self) { format in
+                                let on = pinned.contains(format)
+                                Chip(title: format.shortName, isSelected: on) {
+                                    toggle(format, category: category, current: pinned, available: available)
+                                }
+                                .opacity(!on && pinned.count >= TargetCatalog.wheelCapacity ? 0.4 : 1)
+                            }
+                        }
                     }
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
-    private func toggle(_ format: FileFormat, on: Bool, category: FormatCategory, current: [FileFormat], available: [FileFormat]) {
+    private func toggle(_ format: FileFormat, category: FormatCategory, current: [FileFormat], available: [FileFormat]) {
         var set = Set(current)
-        if on { set.insert(format) } else { set.remove(format) }
+        if set.contains(format) {
+            guard set.count > 1 else { return }
+            set.remove(format)
+        } else {
+            guard set.count < TargetCatalog.wheelCapacity else { return }
+            set.insert(format)
+        }
         prefs.pinnedTargets[category] = available.filter(set.contains)
     }
 
@@ -142,43 +195,41 @@ private struct EngineSettings: View {
     private let ffmpeg = FFmpeg.shared
 
     var body: some View {
-        Form {
-            Section("Built in") {
-                row("Images, PDF, documents, OCR", ok: true, detail: "ImageIO, Core Image, PDFKit, Vision")
-                row("Video and audio", ok: true, detail: "AVFoundation, Core Audio")
-                row("Background removal", ok: RecipeRenderer.canRemoveBackground,
-                    detail: RecipeRenderer.canRemoveBackground ? "Vision" : "Needs macOS 14 or later")
+        VStack(spacing: 14) {
+            Card {
+                VStack(spacing: 4) {
+                    status("Images, PDF and documents", ok: true, detail: "Built into macOS")
+                    Hairline()
+                    status("Video and audio", ok: true, detail: "Built into macOS")
+                    Hairline()
+                    status("More video and audio formats", ok: ffmpeg.isAvailable,
+                           detail: ffmpeg.isAvailable ? "ffmpeg · MP3, OGG, MKV, WebM, AVI, WMV" : "Install ffmpeg to add MP3, OGG, MKV, WebM, AVI, WMV")
+                    Hairline()
+                    status("WebP", ok: WebPTools.canEncode, detail: WebPTools.canEncode ? "libwebp" : "Install webp to save WebP images")
+                }
             }
-            Section("Optional engines") {
-                row("ffmpeg", ok: ffmpeg.isAvailable,
-                    detail: ffmpeg.path ?? "Adds MP3, OGG, Opus, WMA, MKV, WebM, AVI, WMV and better GIFs")
-                row("WebP (libwebp)", ok: WebPTools.canEncode, detail: WebPTools.cwebp ?? "Adds WebP output")
-                if !ffmpeg.isAvailable || !WebPTools.canEncode {
+            if !ffmpeg.isAvailable || !WebPTools.canEncode {
+                Card(padding: 14) {
                     HStack {
-                        Text("brew install ffmpeg webp").font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                        Text("brew install ffmpeg webp").font(.system(size: 12.5, design: .monospaced)).textSelection(.enabled)
                         Spacer()
                         Button("Copy") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString("brew install ffmpeg webp", forType: .string)
                         }
+                        .buttonStyle(.secondary)
                     }
                 }
             }
-            Section {
-                LabeledContent("Conversion options", value: "\(FileFormat.allCases.reduce(0) { $0 + Engine.shared.targets(from: $1).count })")
-                LabeledContent("Image formats written", value: ImageCodec.writableFormats.map(\.displayName).sorted().joined(separator: ", "))
-            }
+            Text("\(FileFormat.allCases.reduce(0) { $0 + Engine.shared.targets(from: $1).count }) conversions available · all processing stays on this Mac")
+                .font(Theme.label(11.5, weight: .regular)).foregroundStyle(Theme.faint)
         }
-        .formStyle(.grouped)
     }
 
-    private func row(_ title: String, ok: Bool, detail: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle").foregroundStyle(ok ? .green : .secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
-            }
+    private func status(_ title: String, ok: Bool, detail: String) -> some View {
+        Row(title: title, detail: detail) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "circle.dashed")
+                .font(.system(size: 17)).foregroundStyle(ok ? Theme.orange : Theme.faint)
         }
     }
 }

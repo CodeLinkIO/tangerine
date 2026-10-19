@@ -1,4 +1,5 @@
 import AppKit
+import QuickLookThumbnailing
 import TangerineKit
 
 /// Hidden command-line flags:
@@ -16,7 +17,7 @@ enum DeveloperCommands {
             let rest = Array(arguments.dropFirst(4))
             let highlight = rest.firstIndex(of: "highlight").flatMap { rest.indices.contains($0 + 1) ? Int(rest[$0 + 1]) : nil }
             renderWheel(to: URL(fileURLWithPath: arguments[2]), file: URL(fileURLWithPath: arguments[3]),
-                        mode: rest.contains("tools") ? .tools : .convert, dark: rest.contains("dark"), highlight: highlight)
+                        mode: rest.contains("tools") ? .tools : .convert, dark: rest.contains("dark"), highlight: highlight, rest: rest)
             return true
         default:
             return false
@@ -34,7 +35,7 @@ enum DeveloperCommands {
         }
     }
 
-    private static func renderWheel(to url: URL, file: URL, mode: WheelMode, dark: Bool, highlight: Int?) {
+    private static func renderWheel(to url: URL, file: URL, mode: WheelMode, dark: Bool, highlight: Int?, rest: [String] = []) {
         let view = WheelView(frame: CGRect(origin: .zero, size: WheelView.size))
         view.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         view.items = WheelController.items(for: mode, files: [file])
@@ -42,6 +43,14 @@ enum DeveloperCommands {
         view.keys = WheelMode.allCases.map { (Preferences.shared.key(for: $0), $0) }
         view.subtitle = WheelController.summary(of: [file])
         view.emptyMessage = "No conversions for this file.\nTap ⌘ for edits and tools."
+        if !rest.contains("nothumb") {
+            let request = QLThumbnailGenerator.Request(fileAt: file, size: CGSize(width: 76, height: 76), scale: 2, representationTypes: .thumbnail)
+            let done = DispatchSemaphore(value: 0)
+            var thumb: NSImage?
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in thumb = rep?.nsImage; done.signal() }
+            _ = done.wait(timeout: .now() + 5)
+            view.thumbnail = thumb
+        }
         if let highlight {
             let point = WheelGeometry.labelPoint(index: highlight, count: view.items.count, center: view.wheelCenter)
             view.select(at: point)

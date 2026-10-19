@@ -115,6 +115,8 @@ struct Segmented<Value: Hashable>: View {
                 let selected = option == selection
                 Button { selection = option } label: {
                     Text(title(option))
+                        .lineLimit(1)
+                        .fixedSize()
                         .font(Theme.label(12.5, weight: selected ? .semibold : .medium))
                         .foregroundStyle(selected ? Theme.text : Theme.muted)
                         .padding(.horizontal, 12)
@@ -131,6 +133,7 @@ struct Segmented<Value: Hashable>: View {
             }
         }
         .padding(3)
+        .fixedSize()
         .background(Theme.subtle, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .animation(.easeOut(duration: 0.15), value: selection)
     }

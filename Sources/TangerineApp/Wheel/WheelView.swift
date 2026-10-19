@@ -38,9 +38,9 @@ enum WheelItem: Equatable {
 final class WheelView: NSView {
     static let size = CGSize(width: 300, height: 336)
 
-    var items: [WheelItem] = [] { didSet { highlighted = nil; needsDisplay = true; updateMask() } }
+    var items: [WheelItem] = [] { didSet { highlighted = nil; needsDisplay = true } }
     var mode: WheelMode = .convert { didSet { needsDisplay = true } }
-    var keys: [(ModifierKey, WheelMode)] = [] { didSet { needsDisplay = true; updateMask() } }
+    var keys: [(ModifierKey, WheelMode)] = [] { didSet { needsDisplay = true } }
     var subtitle = "" { didSet { needsDisplay = true } }
     var emptyMessage = "" { didSet { needsDisplay = true } }
     private(set) var highlighted: Int? { didSet { if highlighted != oldValue { needsDisplay = true; hapticTick() } } }
@@ -50,8 +50,8 @@ final class WheelView: NSView {
     var onCancel: (() -> Void)?
     var onModeKey: ((ModifierKey) -> Void)?
 
-    /// Blur shown behind the petals; a sibling placed below this view (subviews would draw on top).
-    weak var glass: NSVisualEffectView? { didSet { updateMask() } }
+    /// Thumbnail of the dragged file, shown in the center while nothing is highlighted.
+    var thumbnail: NSImage? { didSet { needsDisplay = true } }
     private var trackingArea: NSTrackingArea?
     private var previousFlags: NSEvent.ModifierFlags = []
 
@@ -77,34 +77,6 @@ final class WheelView: NSView {
         items.indices.map { WheelGeometry.petalPath(index: $0, count: items.count, center: wheelCenter) }
     }
 
-    /// Masks the blur to the petals, the center disk and the legend so the rest stays clear.
-    private func updateMask() {
-        guard let glass else { return }
-        let paths = petalPaths()
-        let center = wheelCenter
-        let legend = legendRect
-        let empty = items.isEmpty
-        let message = messageRect
-        glass.maskImage = NSImage(size: bounds.size, flipped: false) { _ in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            context.setFillColor(NSColor.black.cgColor)
-            if empty {
-                context.addPath(CGPath(roundedRect: message, cornerWidth: 18, cornerHeight: 18, transform: nil))
-            } else {
-                paths.forEach(context.addPath)
-                context.addEllipse(in: CGRect(x: center.x - 40, y: center.y - 40, width: 80, height: 80))
-            }
-            context.addPath(CGPath(roundedRect: legend, cornerWidth: legend.height / 2, cornerHeight: legend.height / 2, transform: nil))
-            context.fillPath()
-            return true
-        }
-    }
-
-    override func layout() {
-        super.layout()
-        updateMask()
-    }
-
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         needsDisplay = true
@@ -122,71 +94,100 @@ final class WheelView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let dark = isDark
-        let label = dark ? NSColor.white : NSColor(white: 0.08, alpha: 1)
-        let muted = dark ? NSColor(white: 1, alpha: 0.6) : NSColor(white: 0, alpha: 0.5)
-        let stroke = dark ? NSColor(white: 1, alpha: 0.14) : NSColor(srgbRed: 0x5D / 255, green: 0x66 / 255, blue: 0x66 / 255, alpha: 0.22)
+        let label = dark ? NSColor.white : NSColor(srgbRed: 0x29 / 255, green: 0x29 / 255, blue: 0x29 / 255, alpha: 1)
+        let muted = dark ? NSColor(white: 1, alpha: 0.55) : NSColor(white: 0, alpha: 0.47)
+        let stroke = dark ? NSColor(white: 1, alpha: 0.1) : NSColor(srgbRed: 0x5D / 255, green: 0x66 / 255, blue: 0x66 / 255, alpha: 0.2)
+        let surface = dark ? NSColor(white: 0.16, alpha: 0.97) : NSColor(white: 1, alpha: 0.97)
 
         if items.isEmpty {
-            drawBubble(context, rect: messageRect, stroke: stroke, dark: dark)
-            drawText(emptyMessage, in: messageRect.insetBy(dx: 18, dy: 14), font: .systemFont(ofSize: 12, weight: .medium), color: label)
+            drawSurface(context, path: CGPath(roundedRect: messageRect, cornerWidth: 20, cornerHeight: 20, transform: nil),
+                        fill: surface, stroke: stroke, dark: dark)
+            drawText(emptyMessage, in: messageRect.insetBy(dx: 18, dy: 14), font: .systemFont(ofSize: 12.5, weight: .medium), color: label)
         } else {
             let paths = petalPaths()
-            // Soft shadow under the whole flower.
+            // One soft shadow under the whole flower, like the website's drop-shadow.
             context.saveGState()
-            context.setShadow(offset: CGSize(width: 0, height: -5), blur: 10,
-                              color: NSColor(srgbRed: 0.15, green: 0.2, blue: 0.22, alpha: dark ? 0.45 : 0.18).cgColor)
+            context.setShadow(offset: CGSize(width: 0, height: -6), blur: 18,
+                              color: NSColor(srgbRed: 0.15, green: 0.2, blue: 0.22, alpha: dark ? 0.55 : 0.2).cgColor)
             context.beginTransparencyLayer(auxiliaryInfo: nil)
-            for (index, path) in paths.enumerated() {
+            for path in paths {
                 context.addPath(path)
-                context.setFillColor(fill(for: index, dark: dark).cgColor)
+                context.setFillColor(surface.cgColor)
                 context.fillPath()
             }
             context.endTransparencyLayer()
             context.restoreGState()
 
             for (index, path) in paths.enumerated() {
-                context.addPath(path)
                 let isOn = index == highlighted
-                context.setStrokeColor(isOn ? NSColor(srgbRed: 0.76, green: 0.4, blue: 0.2, alpha: 0.45).cgColor : stroke.cgColor)
+                if isOn {
+                    context.addPath(path)
+                    context.setFillColor(Theme.nsOrangeHot.cgColor)
+                    context.fillPath()
+                } else if !dark {
+                    // Subtle glass sheen: lighter toward the rim.
+                    context.saveGState()
+                    context.addPath(path)
+                    context.clip()
+                    let colors = [NSColor(srgbRed: 0.95, green: 0.96, blue: 0.965, alpha: 1).cgColor, NSColor.white.cgColor] as CFArray
+                    if let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: colors, locations: [0, 1]) {
+                        context.drawRadialGradient(gradient, startCenter: wheelCenter, startRadius: WheelGeometry.inner,
+                                                   endCenter: wheelCenter, endRadius: WheelGeometry.outer, options: [])
+                    }
+                    context.restoreGState()
+                }
+                context.addPath(path)
+                context.setStrokeColor(isOn ? NSColor(srgbRed: 0.76, green: 0.4, blue: 0.2, alpha: 0.44).cgColor : stroke.cgColor)
                 context.setLineWidth(0.75)
                 context.strokePath()
                 drawPetalContent(items[index], at: WheelGeometry.labelPoint(index: index, count: items.count, center: wheelCenter),
                                  color: isOn ? .white : label)
             }
-
-            // Center disk with the current hint.
-            let disk = CGRect(x: wheelCenter.x - 40, y: wheelCenter.y - 40, width: 80, height: 80)
-            context.addEllipse(in: disk)
-            context.setFillColor((dark ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 1, alpha: 0.55)).cgColor)
-            context.fillPath()
-            context.addEllipse(in: disk)
-            context.setStrokeColor(stroke.cgColor)
-            context.strokePath()
-            if let highlighted, items.indices.contains(highlighted) {
-                drawText(items[highlighted].centerTitle, in: disk.insetBy(dx: 8, dy: 18),
-                         font: .rounded(10.5, weight: .semibold), color: label)
-            } else {
-                drawText(mode.title, in: disk.insetBy(dx: 6, dy: 24).offsetBy(dx: 0, dy: 7),
-                         font: .rounded(13, weight: .bold), color: label)
-                drawText(subtitle, in: disk.insetBy(dx: 8, dy: 26).offsetBy(dx: 0, dy: -9),
-                         font: .rounded(9.5, weight: .medium), color: muted)
-            }
+            drawCenter(context, label: label, muted: muted, stroke: stroke, surface: surface)
         }
-        drawLegend(context, label: label, muted: muted, stroke: stroke, dark: dark)
+        drawLegend(context, label: label, muted: muted, stroke: stroke, surface: surface, dark: dark)
     }
 
-    private func fill(for index: Int, dark: Bool) -> NSColor {
-        if index == highlighted { return Self.orange }
-        return dark ? NSColor(white: 0.16, alpha: 0.55) : NSColor(white: 1, alpha: 0.62)
-    }
-
-    private func drawBubble(_ context: CGContext, rect: CGRect, stroke: NSColor, dark: Bool) {
-        let path = CGPath(roundedRect: rect, cornerWidth: 18, cornerHeight: 18, transform: nil)
-        context.addPath(path)
-        context.setFillColor((dark ? NSColor(white: 0.16, alpha: 0.55) : NSColor(white: 1, alpha: 0.62)).cgColor)
+    /// Center disk: the file's thumbnail, or what the highlighted petal will do.
+    private func drawCenter(_ context: CGContext, label: NSColor, muted: NSColor, stroke: NSColor, surface: NSColor) {
+        let disk = CGRect(x: wheelCenter.x - 38, y: wheelCenter.y - 38, width: 76, height: 76)
+        context.addEllipse(in: disk)
+        context.setFillColor(surface.cgColor)
         context.fillPath()
+        if let highlighted, items.indices.contains(highlighted) {
+            drawText(items[highlighted].centerTitle, in: disk.insetBy(dx: 7, dy: 16), font: .rounded(10.5, weight: .semibold), color: label)
+        } else if let thumbnail {
+            context.saveGState()
+            context.addEllipse(in: disk.insetBy(dx: 4, dy: 4))
+            context.clip()
+            let inner = disk.insetBy(dx: 4, dy: 4)
+            let size = thumbnail.size
+            let scale = max(inner.width / max(size.width, 1), inner.height / max(size.height, 1))
+            let drawSize = CGSize(width: size.width * scale, height: size.height * scale)
+            thumbnail.draw(in: CGRect(x: inner.midX - drawSize.width / 2, y: inner.midY - drawSize.height / 2,
+                                      width: drawSize.width, height: drawSize.height))
+            context.restoreGState()
+        } else {
+            drawText(mode.title, in: disk.insetBy(dx: 6, dy: 22).offsetBy(dx: 0, dy: 7), font: .rounded(13, weight: .bold), color: label)
+            drawText(subtitle, in: disk.insetBy(dx: 8, dy: 24).offsetBy(dx: 0, dy: -9), font: .rounded(9.5, weight: .medium), color: muted)
+        }
+        context.addEllipse(in: disk)
+        context.setStrokeColor(stroke.cgColor)
+        context.setLineWidth(0.75)
+        context.strokePath()
+    }
+
+    private func drawSurface(_ context: CGContext, path: CGPath, fill: NSColor, stroke: NSColor, dark: Bool) {
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: -4), blur: 14,
+                          color: NSColor(srgbRed: 0.15, green: 0.2, blue: 0.22, alpha: dark ? 0.5 : 0.16).cgColor)
+        context.addPath(path)
+        context.setFillColor(fill.cgColor)
+        context.fillPath()
+        context.restoreGState()
         context.addPath(path)
         context.setStrokeColor(stroke.cgColor)
+        context.setLineWidth(0.75)
         context.strokePath()
     }
 
@@ -204,27 +205,33 @@ final class WheelView: NSView {
         }
     }
 
-    private func drawLegend(_ context: CGContext, label: NSColor, muted: NSColor, stroke: NSColor, dark: Bool) {
+    /// "⇧ Convert  ⌘ Edit" with keyboard-key caps; the active wheel's key is orange.
+    private func drawLegend(_ context: CGContext, label: NSColor, muted: NSColor, stroke: NSColor, surface: NSColor, dark: Bool) {
         let rect = legendRect
-        let path = CGPath(roundedRect: rect, cornerWidth: rect.height / 2, cornerHeight: rect.height / 2, transform: nil)
-        context.addPath(path)
-        context.setFillColor((dark ? NSColor(white: 0.16, alpha: 0.55) : NSColor(white: 1, alpha: 0.62)).cgColor)
-        context.fillPath()
-        context.addPath(path)
-        context.setStrokeColor(stroke.cgColor)
-        context.strokePath()
-
+        drawSurface(context, path: CGPath(roundedRect: rect, cornerWidth: rect.height / 2, cornerHeight: rect.height / 2, transform: nil),
+                    fill: surface, stroke: stroke, dark: dark)
         let segment = rect.width / CGFloat(max(keys.count, 1))
         for (i, (key, keyMode)) in keys.enumerated() {
             let active = keyMode == mode
             let x = rect.minX + CGFloat(i) * segment
-            let cap = CGRect(x: x + 12, y: rect.minY + 6, width: 18, height: 18)
+            let cap = CGRect(x: x + 12, y: rect.minY + 5, width: 20, height: 20)
             let capPath = CGPath(roundedRect: cap, cornerWidth: 5, cornerHeight: 5, transform: nil)
+            context.saveGState()
+            if !active {
+                context.setShadow(offset: CGSize(width: 0, height: -1.5), blur: 0, color: NSColor(white: 0, alpha: dark ? 0.5 : 0.1).cgColor)
+            }
             context.addPath(capPath)
-            context.setFillColor((active ? Self.orange : (dark ? NSColor(white: 1, alpha: 0.12) : NSColor(white: 0, alpha: 0.07))).cgColor)
+            context.setFillColor((active ? Theme.nsOrangeHot : (dark ? NSColor(white: 0.24, alpha: 1) : .white)).cgColor)
             context.fillPath()
+            context.restoreGState()
+            if !active {
+                context.addPath(capPath)
+                context.setStrokeColor(stroke.cgColor)
+                context.setLineWidth(0.75)
+                context.strokePath()
+            }
             drawText(key.symbol, in: cap.offsetBy(dx: 0, dy: -1), font: .rounded(11, weight: .bold), color: active ? .white : label)
-            let title = CGRect(x: cap.maxX + 6, y: rect.minY + 7, width: segment - 42, height: 16)
+            let title = CGRect(x: cap.maxX + 7, y: rect.minY + 7, width: segment - 44, height: 16)
             drawText(keyMode.title, in: title, font: .rounded(12, weight: active ? .bold : .medium),
                      color: active ? label : muted, alignment: .left)
         }
