@@ -1,22 +1,24 @@
 import SwiftUI
 import TangerineKit
 
-/// Root view of the editor window: toolbar + canvas on the left, inspector on the right.
+/// Root view of the editor window: title bar, the image card, and one card of controls.
 struct EditorView: View {
     @ObservedObject var model: EditorModel
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                EditorTopBar(model: model)
-                Divider()
-                canvas
-            }
-            Divider()
-            EditorInspector(model: model)
+        VStack(spacing: 14) {
+            EditorTopBar(model: model)
+            canvasCard
+            EditorControls(model: model)
+                .disabled(model.isLoading || model.loadError != nil)
         }
-        .frame(minWidth: 800, minHeight: 560)
-        .tint(EditorStyle.accent)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
+        .frame(minWidth: 760, minHeight: 560)
+        .background(Theme.page)
+        // Draw into the transparent title bar so the file name lines up with the traffic lights.
+        .ignoresSafeArea(.container, edges: .top)
+        .tint(Theme.orange)
         .alert("Something went wrong", isPresented: Binding(get: { model.errorMessage != nil },
                                                             set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -25,25 +27,27 @@ struct EditorView: View {
         }
     }
 
-    @ViewBuilder private var canvas: some View {
+    private var canvasCard: some View {
         ZStack {
-            Color(nsColor: .underPageBackgroundColor)
             if let error = model.loadError {
                 VStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 34))
-                        .foregroundStyle(.secondary)
-                    Text("Couldn't open this image").font(.headline)
-                    Text(error).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Image(systemName: "photo.badge.exclamationmark").font(.system(size: 34, weight: .light))
+                        .foregroundStyle(Theme.muted)
+                    Text("Couldn't open this image").font(Theme.label(15, weight: .semibold)).foregroundStyle(Theme.text)
+                    Text(error).font(Theme.label(12.5, weight: .regular)).foregroundStyle(Theme.muted)
+                        .multilineTextAlignment(.center)
                 }
                 .padding(40)
             } else if model.isLoading || model.previewImage == nil {
-                ProgressView("Opening \(model.url.lastPathComponent)…")
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Opening \(model.url.lastPathComponent)…").font(Theme.label(12.5)).foregroundStyle(Theme.muted)
+                }
             } else {
                 let showsOriginal = model.isComparing && model.originalImage != nil
                 EditorCanvas(
                     image: showsOriginal ? model.originalImage : model.previewImage,
-                    showsCrop: model.section == .crop && model.previewIsUncropped && !showsOriginal,
+                    showsCrop: model.tool == .crop && model.previewIsUncropped && !showsOriginal,
                     crop: model.cropRect,
                     cropRatio: model.normalizedCropRatio,
                     zoom: model.zoom,
@@ -55,99 +59,55 @@ struct EditorView: View {
                 if showsOriginal {
                     VStack {
                         Text("Original")
-                            .font(.callout.weight(.semibold))
+                            .font(Theme.label(12, weight: .semibold))
+                            .foregroundStyle(Theme.text)
                             .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .padding(.top, 14)
+                            .frame(height: 26)
+                            .background(Capsule().fill(Theme.card))
+                            .overlay(Capsule().strokeBorder(Theme.line))
+                            .padding(.top, 12)
                         Spacer()
                     }
                     .allowsHitTesting(false)
                 }
             }
         }
-        .clipped()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Theme.line))
+        .shadow(color: .black.opacity(0.035), radius: 18, y: 8)
     }
 }
 
+/// Sits in the transparent title bar: file name in the middle, undo/redo on the right.
 struct EditorTopBar: View {
     @ObservedObject var model: EditorModel
 
     var body: some View {
-        HStack(spacing: 6) {
-            Group {
-                Button(action: model.undo) { Image(systemName: "arrow.uturn.backward") }
-                    .help("Undo (⌘Z)")
+        HStack(spacing: 2) {
+            Color.clear.frame(width: 120, height: 1)   // room for the traffic lights, keeps the title centered
+            Spacer(minLength: 8)
+            HStack(spacing: 7) {
+                Text(model.url.lastPathComponent)
+                    .font(Theme.label(13.5, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if model.isDirty {
+                    Circle().fill(Theme.orange).frame(width: 6, height: 6).help("Unsaved changes")
+                }
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 2) {
+                IconButton(systemImage: "arrow.uturn.backward", help: "Undo (⌘Z)", action: model.undo)
                     .disabled(!model.canUndo)
-                Button(action: model.redo) { Image(systemName: "arrow.uturn.forward") }
-                    .help("Redo (⇧⌘Z)")
+                IconButton(systemImage: "arrow.uturn.forward", help: "Redo (⇧⌘Z)", action: model.redo)
                     .disabled(!model.canRedo)
             }
-            .buttonStyle(.borderless)
-            .font(.system(size: 14, weight: .medium))
-            .frame(width: 28, height: 24)
-
-            Button("Reset All", action: model.resetAll)
-                .disabled(model.recipe.isIdentity)
-                .controlSize(.small)
-
-            Spacer(minLength: 12)
-
-            Text(sizeSummary)
-                .font(.callout)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 12)
-
-            compareButton
-
-            Divider().frame(height: 18)
-
-            Group {
-                Button(action: model.zoomOut) { Image(systemName: "minus.magnifyingglass") }
-                    .help("Zoom Out (⌘−)")
-                Button(action: model.zoomToFit) {
-                    Text(model.zoom == 1 ? "Fit" : "\(Int((model.zoom * 100).rounded()))%")
-                        .monospacedDigit()
-                        .frame(minWidth: 42)
-                }
-                .help("Zoom to Fit (⌘0)")
-                Button(action: model.zoomIn) { Image(systemName: "plus.magnifyingglass") }
-                    .help("Zoom In (⌘+)")
-            }
-            .buttonStyle(.borderless)
-            .font(.system(size: 13, weight: .medium))
+            .frame(width: 120, alignment: .trailing)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 40)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .disabled(model.isLoading || model.loadError != nil)
-    }
-
-    private var sizeSummary: String {
-        guard model.sourceSize != .zero else { return "" }
-        let source = EditorFormatting.pixels(model.sourceSize)
-        let final = model.finalSize
-        return final == model.sourceSize ? source : "\(source)  →  \(EditorFormatting.pixels(final))"
-    }
-
-    /// Press and hold to see the original (Space does the same).
-    private var compareButton: some View {
-        Label("Compare", systemImage: "square.split.2x1")
-            .font(.callout)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(model.isComparing ? EditorStyle.accent.opacity(0.2) : Color.primary.opacity(0.06))
-            )
-            .foregroundStyle(model.isComparing ? EditorStyle.accent : Color.primary)
-            .contentShape(Rectangle())
-            .onLongPressGesture(minimumDuration: 60, maximumDistance: 400, perform: {},
-                                onPressingChanged: { model.isComparing = $0 })
-            .help("Hold to compare with the original (or hold Space)")
-            .accessibilityAddTraits(.isButton)
+        .frame(height: 30)
+        .padding(.top, 1)
     }
 }

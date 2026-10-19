@@ -30,17 +30,12 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
         key = url
         model = EditorModel(url: url, options: options, onSaved: onSaved)
 
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                              backing: .buffered, defer: false)
+        let window = NSWindow.themed(size: CGSize(width: 980, height: 720), title: url.lastPathComponent)
         let hosting = NSHostingController(rootView: EditorView(model: model))
         hosting.sizingOptions = []
         window.contentViewController = hosting
-        window.setContentSize(NSSize(width: 1100, height: 720))
-        window.minSize = NSSize(width: 800, height: 560)
-        window.title = url.lastPathComponent
-        window.representedURL = url
-        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 980, height: 720))
+        window.minSize = NSSize(width: 760, height: 560)
         window.tabbingMode = .disallowed
         super.init(window: window)
 
@@ -97,6 +92,13 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
                 model.isComparing = false
             }
             return true
+        }
+        if event.type == .keyDown, modifiers.isEmpty, !editingText, model.tool == .crop {
+            switch event.keyCode {
+            case 36, 76: model.commitCrop(); return true    // Return, Enter
+            case 53: model.cancelCrop(); return true        // Escape
+            default: break
+            }
         }
         guard event.type == .keyDown, modifiers.contains(.command) else { return false }
         switch event.charactersIgnoringModifiers?.lowercased() {
