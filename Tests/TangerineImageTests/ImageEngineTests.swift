@@ -303,7 +303,7 @@ final class ImageEngineTests: XCTestCase {
     // MARK: Edit recipe
 
     func testRecipeGeometry() throws {
-        let renderer = ImageRenderer.shared
+        let renderer = RecipeRenderer.shared
         let input = CIImage(cgImage: makeImage())
         var recipe = EditRecipe()
         recipe.quarterTurns = 1
@@ -325,7 +325,7 @@ final class ImageEngineTests: XCTestCase {
     }
 
     func testRecipeColorAdjustments() throws {
-        let renderer = ImageRenderer.shared
+        let renderer = RecipeRenderer.shared
         let input = CIImage(cgImage: makeImage())
         var recipe = EditRecipe()
         recipe.filter = .mono

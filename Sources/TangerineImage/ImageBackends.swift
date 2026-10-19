@@ -92,7 +92,7 @@ struct ImageToolBackend: ToolBackend {
     func supports(_ tool: ToolID, format: FileFormat) -> Bool {
         guard ImageEngine.readableFormats.contains(format), Self.tools.contains(tool) else { return false }
         switch tool {
-        case .removeBackground: return ImageRenderer.canRemoveBackground
+        case .removeBackground: return RecipeRenderer.canRemoveBackground
         case .compress: return format != .gif && format != .svg && format != .ico && format != .icns
         default: return true
         }
@@ -175,7 +175,7 @@ struct ImageToolBackend: ToolBackend {
         }
 
         context.progress(0.3)
-        let rendered = try ImageRenderer.shared.render(recipe, on: loaded)
+        let rendered = try RecipeRenderer.shared.render(recipe, on: loaded)
         let destination = output.file(extension: outputFormat.fileExtension, suffix: suffix)
         try await ImageCodec.write(rendered, as: outputFormat, to: destination, options: writeOptions(options, loaded: loaded))
         return ToolOutput(files: [destination])

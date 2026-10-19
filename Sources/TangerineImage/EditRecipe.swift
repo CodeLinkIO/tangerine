@@ -36,7 +36,7 @@ public enum FilterPreset: String, CaseIterable, Codable, Sendable {
     }
 }
 
-/// A non-destructive list of edits. The editor mutates it; `ImageRenderer` turns it into pixels.
+/// A non-destructive list of edits. The editor mutates it; `RecipeRenderer` turns it into pixels.
 /// Adjustment values are normalized to -1...1 (0 = unchanged) unless noted.
 public struct EditRecipe: Codable, Equatable, Sendable {
     // Geometry, applied in this order: background removal, quarter turns, flips, straighten, crop, resize.
@@ -81,8 +81,8 @@ public struct EditRecipe: Codable, Equatable, Sendable {
 }
 
 /// Renders `EditRecipe`s with Core Image on the GPU.
-public final class ImageRenderer: @unchecked Sendable {
-    public static let shared = ImageRenderer()
+public final class RecipeRenderer: @unchecked Sendable {
+    public static let shared = RecipeRenderer()
 
     public let context = CIContext(options: [.cacheIntermediates: false, .name: "Tangerine"])
 
