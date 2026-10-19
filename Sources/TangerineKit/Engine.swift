@@ -27,12 +27,14 @@ public struct JobReport: Sendable {
     public var text: String?
     public var inputBytes: Int64 = 0
     public var outputBytes: Int64 = 0
+    /// Whether the size change is meaningful (compression, same-family media conversions).
+    public var comparesSize = false
 
     public var succeeded: Bool { failures.isEmpty && (!outputs.isEmpty || text != nil || !notes.isEmpty) }
 
     /// Size change as a signed percentage (negative = smaller), when outputs exist.
     public var sizeChangePercent: Int? {
-        guard inputBytes > 0, outputBytes > 0 else { return nil }
+        guard comparesSize, inputBytes > 0, outputBytes > 0 else { return nil }
         return Int((Double(outputBytes - inputBytes) / Double(inputBytes) * 100).rounded())
     }
 
@@ -166,7 +168,9 @@ public final class Engine: @unchecked Sendable {
                         progress: @escaping @Sendable (JobProgress) -> Void = { _ in }) async throws -> JobReport {
         let files = expand(inputs).filter { FileFormat.detect($0) != target }
         guard !files.isEmpty else { throw ConversionError.unsupported(from: nil, to: target.displayName) }
-        return try await runEach(files, progress: progress) { file, context in
+        let mediaCategories: Set<FormatCategory> = [.image, .audio, .video]
+        let sameFamily = files.allSatisfy { FileFormat.detect($0)?.category == target.category } && mediaCategories.contains(target.category)
+        var report = try await runEach(files, progress: progress) { file, context in
             guard let from = FileFormat.detect(file), let backend = self.backend(from: from, to: target) else {
                 throw ConversionError.unsupported(from: FileFormat.detect(file), to: target.displayName)
             }
@@ -175,6 +179,8 @@ public final class Engine: @unchecked Sendable {
             context.options = options
             return ToolOutput(files: try await backend.convert(file, from: from, to: target, output: plan, context: context))
         }
+        report.comparesSize = sameFamily
+        return report
     }
 
     /// Runs a one-shot tool on the inputs.
@@ -205,7 +211,7 @@ public final class Engine: @unchecked Sendable {
             return report
         }
 
-        return try await runEach(files, progress: progress) { file, context in
+        var report = try await runEach(files, progress: progress) { file, context in
             guard let format = FileFormat.detect(file), let backend = self.toolBackend(tool, format) else {
                 throw ConversionError.unsupported(from: FileFormat.detect(file), to: tool.title)
             }
@@ -214,6 +220,8 @@ public final class Engine: @unchecked Sendable {
             context.options = options
             return try await backend.run(tool, inputs: [file], output: plan, context: context)
         }
+        report.comparesSize = [.compress, .resizeHalf, .resizeLong2048, .resizeLong1080, .stripMetadata].contains(tool)
+        return report
     }
 
     /// Runs `work` for each file (a few at a time for small files), collecting results and failures.
