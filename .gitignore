@@ -1,7 +1,23 @@
-*.xcodeproj
-.DS_Store
+# Swift Package Manager and Xcode
 .build/
-.claude/
 .swiftpm/
-build/
+*.xcodeproj
+*.xcworkspace
 xcuserdata/
+DerivedData/
+
+# Build output: scripts/build-app.sh and scripts/package.sh write here
+build/
+*.iconset
+
+# Disk images: only the download at the top level is committed (scripts/package.sh)
+*.dmg
+!/Tangerine.dmg
+
+# macOS, editors and tools
+.DS_Store
+.claude/
+.vscode/
+.idea/
+*.swp
+*~
