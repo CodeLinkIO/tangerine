@@ -131,11 +131,12 @@ public final class RecipeRenderer: @unchecked Sendable {
             let e = image.extent
             let sx = size.width / e.width, sy = size.height / e.height
             let filter = CIFilter.lanczosScaleTransform()
-            filter.inputImage = image
+            // Clamped so the kernel doesn't sample transparency past the edges (a faded 1 px frame otherwise).
+            filter.inputImage = image.clampedToExtent()
             filter.scale = Float(sy)
             filter.aspectRatio = Float(sx / sy)
-            image = moveToOrigin(filter.outputImage ?? image)
-            image = image.cropped(to: CGRect(origin: .zero, size: CGSize(width: size.width.rounded(), height: size.height.rounded())))
+            let scaled = CGRect(x: e.minX * sx, y: e.minY * sy, width: size.width.rounded(), height: size.height.rounded())
+            image = moveToOrigin((filter.outputImage ?? image).cropped(to: scaled))
         }
         return image
     }
@@ -248,18 +249,23 @@ public final class RecipeRenderer: @unchecked Sendable {
     // MARK: Rendering
 
     /// Renders to a CGImage in `colorSpace` (defaults to sRGB), 8 bits per channel.
-    public func render(_ image: CIImage, colorSpace: CGColorSpace? = nil) throws -> CGImage {
+    /// `opaque` marks the alpha channel unused so encoders don't store one for opaque photos.
+    public func render(_ image: CIImage, colorSpace: CGColorSpace? = nil, opaque: Bool = false) throws -> CGImage {
         let space = colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
-        guard let output = context.createCGImage(image, from: image.extent.integral, format: .RGBA8, colorSpace: space) else {
+        let extent = image.extent.integral
+        guard !extent.isInfinite, !extent.isEmpty else { throw ConversionError.failed("Couldn't render the image.") }
+        try ImageCodec.checkPixelBudget(width: Int(extent.width), height: Int(extent.height))
+        guard let output = context.createCGImage(image, from: extent, format: .RGBA8, colorSpace: space) else {
             throw ConversionError.failed("Couldn't render the image.")
         }
-        return output
+        return opaque ? output.droppingAlpha() : output
     }
 
     /// Applies `recipe` to a decoded image and returns pixels in the source color space.
     public func render(_ recipe: EditRecipe, on loaded: LoadedImage) throws -> CGImage {
         let input = CIImage(cgImage: loaded.image)
-        return try render(apply(recipe, to: input), colorSpace: ImageCodec.rgbSpace(of: loaded.image))
+        return try render(apply(recipe, to: input), colorSpace: ImageCodec.rgbSpace(of: loaded.image),
+                          opaque: !loaded.hasAlpha && !recipe.removeBackground)
     }
 
     // MARK: Background removal

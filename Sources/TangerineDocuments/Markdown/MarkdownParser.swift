@@ -29,7 +29,10 @@ enum MarkdownParser {
 
     // MARK: - Blocks
 
-    static func parseBlocks(_ lines: ArraySlice<String>) -> [MarkdownBlock] {
+    /// Quotes and lists nested deeper than this read as paragraphs, so hostile input can't exhaust the stack.
+    static let maxNesting = 32
+
+    static func parseBlocks(_ lines: ArraySlice<String>, depth: Int = 0) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
         var i = lines.startIndex
         let end = lines.endIndex
@@ -74,7 +77,7 @@ enum MarkdownParser {
                 continue
             }
 
-            if isQuote(line) {
+            if depth < maxNesting, isQuote(line) {
                 var inner: [String] = []
                 while i < end, !isBlank(lines[i]) {
                     if isQuote(lines[i]) {
@@ -86,12 +89,12 @@ enum MarkdownParser {
                     }
                     i += 1
                 }
-                blocks.append(.quote(parseBlocks(inner[...])))
+                blocks.append(.quote(parseBlocks(inner[...], depth: depth + 1)))
                 continue
             }
 
-            if let marker = listMarker(line) {
-                let (list, next) = parseList(lines, from: i, first: marker)
+            if depth < maxNesting, let marker = listMarker(line) {
+                let (list, next) = parseList(lines, from: i, first: marker, depth: depth)
                 blocks.append(list)
                 i = next
                 continue
@@ -191,7 +194,7 @@ enum MarkdownParser {
                           contentIndent: markerEnd + spaces, content: content)
     }
 
-    private static func parseList(_ lines: ArraySlice<String>, from start: Int, first: ListMarker) -> (MarkdownBlock, Int) {
+    private static func parseList(_ lines: ArraySlice<String>, from start: Int, first: ListMarker, depth: Int) -> (MarkdownBlock, Int) {
         var items: [[MarkdownBlock]] = []
         var tight = true
         var i = start
@@ -229,7 +232,7 @@ enum MarkdownParser {
                 trailingBlanks += 1
             }
             if itemLines.dropFirst().contains(""), containsBlankBetweenBlocks(itemLines) { tight = false }
-            items.append(parseBlocks(itemLines[...]))
+            items.append(parseBlocks(itemLines[...], depth: depth + 1))
 
             guard i < lines.endIndex, let next = listMarker(lines[i]),
                   next.ordered == first.ordered, next.symbol == first.symbol,

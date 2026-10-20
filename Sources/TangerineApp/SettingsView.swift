@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 import TangerineKit
 
@@ -104,13 +105,28 @@ private struct GeneralSettings: View {
                         Toggle("", isOn: $prefs.finderShortcutEnabled).toggleStyle(.switch).labelsHidden()
                     }
                     Hairline()
-                    Row(title: "Open at login") {
-                        Toggle("", isOn: Binding(get: { prefs.launchAtLogin }, set: { prefs.launchAtLogin = $0 }))
-                            .toggleStyle(.switch).labelsHidden()
+                    Row(title: "Open at login", detail: loginDetail) {
+                        HStack(spacing: 8) {
+                            if prefs.launchAtLoginNeedsApproval {
+                                Button("Allow…") { SMAppService.openSystemSettingsLoginItems() }.buttonStyle(.secondary)
+                            }
+                            Toggle("", isOn: Binding(get: { prefs.launchAtLogin }, set: { prefs.launchAtLogin = $0 }))
+                                .toggleStyle(.switch).labelsHidden()
+                        }
                     }
                 }
             }
         }
+        // The user may change the login item in System Settings while this window is open.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            prefs.objectWillChange.send()
+        }
+    }
+
+    private var loginDetail: String? {
+        if prefs.launchAtLoginNeedsApproval { return "Turned off in System Settings → Login Items." }
+        if !AppLocation.isInApplications { return "Move Tangerine to Applications first." }
+        return nil
     }
 
     private func keyChoice(_ selection: Binding<ModifierKey>, other: ModifierKey) -> some View {

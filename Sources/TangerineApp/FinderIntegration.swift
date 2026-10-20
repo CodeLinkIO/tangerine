@@ -42,21 +42,23 @@ final class HotKey {
 /// Reads the current Finder selection via Apple Events (asks for Automation permission once).
 enum FinderSelection {
     static func current() -> [URL] {
+        // A list, not newline-joined text: file names may contain newlines.
         let source = """
         tell application "Finder"
-            set output to ""
+            set output to {}
             repeat with anItem in (get selection)
-                set output to output & POSIX path of (anItem as alias) & linefeed
+                set end of output to POSIX path of (anItem as alias)
             end repeat
             return output
         end tell
         """
         var error: NSDictionary?
-        guard let result = NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue else {
+        guard let result = NSAppleScript(source: source)?.executeAndReturnError(&error) else {
             if let error { NSLog("Tangerine: Finder selection failed: \(error)") }
             return []
         }
-        return result.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+        guard result.numberOfItems > 0 else { return [] }
+        return (1...result.numberOfItems).compactMap { result.atIndex($0)?.stringValue }.map { URL(fileURLWithPath: $0) }
     }
 }
 

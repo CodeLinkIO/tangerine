@@ -7,29 +7,45 @@ enum EPUBWriter {
         var blocks: [MarkdownBlock]
     }
 
+    /// Headings past this many chapters stay in the last chapter (readers choke on huge spines, and ZIP
+    /// archives without ZIP64 hold at most 65,535 files).
+    static let maxChapters = 1_000
+
     static func write(blocks: [MarkdownBlock], fallbackTitle: String, language: String = "en", to url: URL) throws {
         let chapters = split(blocks, fallbackTitle: fallbackTitle)
+        // EPUB requires a non-empty title, so skip blank "#" lines.
         let bookTitle = blocks.lazy.compactMap { block -> String? in
-            if case let .heading(1, text) = block { return MarkdownInline.plainText(text) }
-            return nil
+            guard case let .heading(1, text) = block else { return nil }
+            let title = MarkdownInline.plainText(text).trimmingCharacters(in: .whitespacesAndNewlines)
+            return title.isEmpty ? nil : title
         }.first ?? fallbackTitle
 
         var zip = ZipWriter()
-        zip.add("mimetype", Data("application/epub+zip".utf8), compress: false)
-        zip.add("META-INF/container.xml", Data(container.utf8))
-        zip.add("OEBPS/content.opf", Data(packageDocument(title: bookTitle, language: language, chapterCount: chapters.count).utf8))
-        zip.add("OEBPS/nav.xhtml", Data(navigation(title: bookTitle, chapters: chapters, language: language).utf8))
-        zip.add("OEBPS/style.css", Data(MarkdownRenderer.Stylesheet.base.utf8))
+        try zip.add("mimetype", Data("application/epub+zip".utf8), compress: false)
+        try zip.add("META-INF/container.xml", Data(container.utf8))
+        try zip.add("OEBPS/content.opf", Data(packageDocument(title: bookTitle, language: language, chapterCount: chapters.count).utf8))
+        try zip.add("OEBPS/nav.xhtml", Data(navigation(title: bookTitle, chapters: chapters, language: language).utf8))
+        try zip.add("OEBPS/style.css", Data(MarkdownRenderer.Stylesheet.base.utf8))
         var options = MarkdownRenderer.Options()
         options.inline.imagesAsText = true
         for (index, chapter) in chapters.enumerated() {
             let body = MarkdownRenderer.body(chapter.blocks, options: options)
-            zip.add("OEBPS/chapter\(index + 1).xhtml", Data(xhtml(title: chapter.title, body: body, language: language).utf8))
+            try zip.add("OEBPS/chapter\(index + 1).xhtml", Data(xhtml(title: chapter.title, body: body, language: language).utf8))
         }
         try zip.finalize().write(to: url, options: .atomic)
     }
 
     static func split(_ blocks: [MarkdownBlock], fallbackTitle: String) -> [Chapter] {
+        var chapters = chapterize(blocks, fallbackTitle: fallbackTitle)
+        if chapters.count > maxChapters {
+            let overflow = chapters[maxChapters...].flatMap(\.blocks)
+            chapters.removeSubrange(maxChapters...)
+            chapters[maxChapters - 1].blocks += overflow
+        }
+        return chapters
+    }
+
+    private static func chapterize(_ blocks: [MarkdownBlock], fallbackTitle: String) -> [Chapter] {
         var chapters: [Chapter] = []
         var current: [MarkdownBlock] = []
         var currentTitle: String?

@@ -64,15 +64,17 @@ final class JobRunner {
 
     private func finish(_ report: JobReport, hud: HUDModel, files: [URL], conversionTarget: FileFormat?) {
         let prefs = Preferences.shared
-        if let text = report.text {
+        if let text = report.text, !text.isEmpty {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         }
         Recents.shared.add(report.outputs)
 
-        if let target = conversionTarget, prefs.replaceOriginals, report.failures.isEmpty, !report.outputs.isEmpty {
-            let originals = Engine.shared.expand(files).filter { FileFormat.detect($0) != target }
-            NSWorkspace.shared.recycle(originals)
+        // Only inputs the engine actually converted, each with its own output; never re-scan the folders,
+        // which now also hold the outputs (e.g. ALAC writes .m4a) and files added during the job.
+        if conversionTarget != nil, prefs.replaceOriginals {
+            let originals = report.replaceableOriginals
+            if !originals.isEmpty { NSWorkspace.shared.recycle(originals) }
         }
         if prefs.revealInFinder, !report.outputs.isEmpty {
             NSWorkspace.shared.activateFileViewerSelecting(report.outputs)

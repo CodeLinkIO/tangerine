@@ -15,11 +15,9 @@ public final class FFmpeg: @unchecked Sendable {
 
     public var isAvailable: Bool { path != nil }
 
-    /// Bundled copy first (`Contents/Resources/ffmpeg` or `Contents/MacOS/ffmpeg`), then system installs.
+    /// Bundled copy first (`Contents/Helpers`, `Contents/Resources` or `Contents/MacOS`), then system installs.
     public static func locate() -> String? {
-        var bundled: [String] = []
-        if let resources = Bundle.main.resourceURL?.path { bundled.append(resources) }
-        if let executableDir = Bundle.main.executableURL?.deletingLastPathComponent().path { bundled.append(executableDir) }
+        let bundled = Shell.bundledToolDirectories
         if let override = ProcessInfo.processInfo.environment["TANGERINE_FFMPEG"],
            FileManager.default.isExecutableFile(atPath: override) {
             return override

@@ -59,7 +59,10 @@ final class EditorModel: ObservableObject {
     private var dragStart: EditorState?
     private var cropEntryState: EditorState?
 
-    var isDirty: Bool { state != savedState }
+    /// Unsaved edits. A resize that gives the same pixels (e.g. just opening Custom) doesn't count.
+    var isDirty: Bool {
+        state.recipe != savedState.recipe || finalSize != (savedState.resize.outputSize(for: croppedSize) ?? croppedSize)
+    }
     var recipe: EditRecipe { state.recipe }
 
     // MARK: UI state
@@ -201,14 +204,19 @@ final class EditorModel: ObservableObject {
     func undo() {
         finishDrag()
         guard let previous = history.undo(from: state) else { return }
-        setState(previous)
-        updateUndoState()
+        restore(previous)
     }
 
     func redo() {
         finishDrag()
         guard let next = history.redo(from: state) else { return }
-        setState(next)
+        restore(next)
+    }
+
+    /// Undo/redo target. A portrait/landscape aspect preset turns with the image, as in `rotate`.
+    private func restore(_ snapshot: EditorState) {
+        if aspect.canSwap, (snapshot.recipe.quarterTurns - state.recipe.quarterTurns) % 2 != 0 { aspectSwapped.toggle() }
+        setState(snapshot)
         updateUndoState()
     }
 
@@ -348,16 +356,31 @@ final class EditorModel: ObservableObject {
 
     func setCustomWidth(_ width: Int) {
         guard let current = customSize else { return }
-        let w = min(max(1, width), 30_000)
+        let w = min(max(1, width), Self.maxCustomSide)
         let h = current.locked ? max(1, Int((CGFloat(w) * croppedSize.height / croppedSize.width).rounded())) : current.height
-        setResize(.custom(width: w, height: h, locked: current.locked))
+        setResize(Self.clampedCustom(width: w, height: h, locked: current.locked))
     }
 
     func setCustomHeight(_ height: Int) {
         guard let current = customSize else { return }
-        let h = min(max(1, height), 30_000)
+        let h = min(max(1, height), Self.maxCustomSide)
         let w = current.locked ? max(1, Int((CGFloat(h) * croppedSize.width / croppedSize.height).rounded())) : current.width
-        setResize(.custom(width: w, height: h, locked: current.locked))
+        setResize(Self.clampedCustom(width: w, height: h, locked: current.locked))
+    }
+
+    private static let maxCustomSide = 30_000
+
+    /// Scales a custom size down, keeping its proportions, so neither side passes `maxCustomSide` and the area
+    /// stays within the renderer's pixel budget (with room for rounding). A locked side derived from a big value
+    /// would otherwise ask for e.g. 30000×53333 and exhaust memory on the next size estimate.
+    private static func clampedCustom(width: Int, height: Int, locked: Bool) -> EditorResize {
+        var scale = min(1, CGFloat(maxCustomSide) / CGFloat(max(width, height)))
+        let budget = CGFloat(ImageCodec.maxPixelCount) * 0.99
+        let area = CGFloat(width) * CGFloat(height) * scale * scale
+        if area > budget { scale *= (budget / area).squareRoot() }
+        guard scale < 1 else { return .custom(width: width, height: height, locked: locked) }
+        return .custom(width: max(1, Int((CGFloat(width) * scale).rounded(.down))),
+                       height: max(1, Int((CGFloat(height) * scale).rounded(.down))), locked: locked)
     }
 
     func toggleCustomLock() {
@@ -426,15 +449,21 @@ final class EditorModel: ObservableObject {
         return "\(exportFormat.displayName) has no transparency, so see-through areas become \(fill)."
     }
 
-    /// Replacing keeps the original's format, so it needs that format selected.
+    /// Whether the file holds more than the one frame or page being edited (animated GIF, multi-page TIFF).
+    private var hasOtherFrames: Bool { (pipeline?.frameCount ?? 1) > 1 }
+
+    /// Replacing keeps the original's format, so it needs that format selected. Files with several frames
+    /// would lose all but the first.
     var canReplaceOriginal: Bool {
         exportFormat == sourceFormat && ImageCodec.writableFormats.contains(sourceFormat)
-            && ![.ico, .icns, .pdf].contains(sourceFormat) && FileManager.default.isWritableFile(atPath: url.path)
+            && ![.ico, .icns, .pdf].contains(sourceFormat) && !hasOtherFrames
+            && FileManager.default.isWritableFile(atPath: url.path)
     }
 
     var replaceHelp: String {
-        canReplaceOriginal ? "Overwrite “\(url.lastPathComponent)”"
-            : "Choose \(sourceFormat.displayName) to replace the original"
+        if canReplaceOriginal { return "Overwrite “\(url.lastPathComponent)”" }
+        if hasOtherFrames { return "Only the first frame is edited, so save a copy instead" }
+        return "Choose \(sourceFormat.displayName) to replace the original"
     }
 
     /// Writes "<name> edited.<ext>" next to the original. Returns true on success.

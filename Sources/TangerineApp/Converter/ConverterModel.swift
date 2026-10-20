@@ -80,7 +80,9 @@ final class ConverterModel: ObservableObject {
             categories[item.format.category, default: 0] += 1
             for target in item.targets { counts[target, default: 0] += 1 }
         }
-        guard let dominant = categories.max(by: { $0.value < $1.value })?.key else { return [] }
+        // Ties go to the category added first; dictionary order would change from launch to launch.
+        let byFirstUse = items.map(\.format.category).reduce(into: [FormatCategory]()) { if !$0.contains($1) { $0.append($1) } }
+        guard let dominant = byFirstUse.max(by: { categories[$0, default: 0] < categories[$1, default: 0] }) else { return [] }
         var ordered = TargetCatalog.orderedTargets(for: dominant)
         for category in FormatCategory.allCases where category != dominant {
             ordered += TargetCatalog.orderedTargets(for: category).filter { !ordered.contains($0) }
@@ -131,6 +133,10 @@ final class ConverterModel: ObservableObject {
                         }
                     }
                     finish(id, report: report)
+                } catch is CancellationError {
+                    update(id) { $0.status = .ready }
+                } catch ConversionError.cancelled {
+                    update(id) { $0.status = .ready }
                 } catch {
                     update(id) { $0.status = .failed(error.localizedDescription) }
                 }
@@ -157,9 +163,9 @@ final class ConverterModel: ObservableObject {
         } else {
             update(id) { $0.status = .done(outputs: report.outputs, summary: report.summary) }
         }
-        if Preferences.shared.replaceOriginals, report.failures.isEmpty, !report.outputs.isEmpty,
-           let item = items.first(where: { $0.id == id }), item.target != nil {
-            NSWorkspace.shared.recycle([item.url])
+        if Preferences.shared.replaceOriginals {
+            let originals = report.replaceableOriginals
+            if !originals.isEmpty { NSWorkspace.shared.recycle(originals) }
         }
     }
 

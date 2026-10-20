@@ -59,6 +59,28 @@ public struct ConversionOptions: Sendable, Codable, Equatable {
     public var pdfDPI: Int = 300
 
     public init() {}
+
+    /// Missing or unreadable values keep their defaults, so settings saved by another app version survive
+    /// instead of all resetting when a single option is added, removed or renamed.
+    public init(from decoder: Decoder) throws {
+        self.init()
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? container.decodeIfPresent(T.self, forKey: key)) ?? fallback
+        }
+        imageQuality = value(.imageQuality, imageQuality)
+        imageMaxPixelSize = value(.imageMaxPixelSize, imageMaxPixelSize)
+        stripImageMetadata = value(.stripImageMetadata, stripImageMetadata)
+        flattenBackground = value(.flattenBackground, flattenBackground)
+        videoResolution = value(.videoResolution, videoResolution)
+        videoCodec = value(.videoCodec, videoCodec)
+        videoQuality = value(.videoQuality, videoQuality)
+        gifFPS = value(.gifFPS, gifFPS)
+        gifWidth = value(.gifWidth, gifWidth)
+        audioBitrateKbps = value(.audioBitrateKbps, audioBitrateKbps)
+        audioSampleRate = value(.audioSampleRate, audioSampleRate)
+        pdfDPI = value(.pdfDPI, pdfDPI)
+    }
 }
 
 public struct SolidColor: Sendable, Codable, Hashable {

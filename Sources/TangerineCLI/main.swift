@@ -13,7 +13,7 @@ struct CLI {
 
     Options:
       --out DIR              Write results to DIR (default: next to each file)
-      --quality 0-100        Image quality for lossy formats (default 85)
+      --quality 1-100        Image quality for lossy formats (default 85)
       --max-size PX          Limit the longest image edge
       --strip-metadata       Remove EXIF/GPS from images
       --resolution R         Video: original, 2160p, 1080p, 720p, 480p
@@ -132,22 +132,28 @@ extension FileFormat {
     }
 }
 
-/// Minimal flag parser: `--flag value`, `--switch`, and positional arguments.
+/// Minimal flag parser: `--flag value`, `--switch`, positional arguments, and `--` before file names that start with "--".
 struct Arguments {
     var positional: [String] = []
     private var values: [String: String] = [:]
     private var switches: Set<String> = []
     private static let valueFlags: Set<String> = ["--to", "--out", "--quality", "--max-size", "--resolution", "--codec",
                                                   "--bitrate", "--dpi"]
+    private static let switchFlags: Set<String> = ["--strip-metadata"]
 
     init(_ args: [String]) throws {
         var iterator = args.makeIterator()
         while let arg = iterator.next() {
-            if Self.valueFlags.contains(arg) {
+            if arg == "--" {
+                while let file = iterator.next() { positional.append(file) }
+            } else if Self.valueFlags.contains(arg) {
                 guard let value = iterator.next() else { throw ConversionError.failed("\(arg) needs a value.") }
                 values[arg] = value
-            } else if arg.hasPrefix("--") {
+            } else if Self.switchFlags.contains(arg) {
                 switches.insert(arg)
+            } else if arg.hasPrefix("--") {
+                // A typo such as --strip-metdata must not silently keep the metadata.
+                throw ConversionError.failed("Unknown option “\(arg)”. Run “tangerine help” for usage.")
             } else {
                 positional.append(arg)
             }

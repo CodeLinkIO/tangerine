@@ -15,8 +15,9 @@ public struct AVVideoBackend: ConversionBackend {
     public func supports(from: FileFormat, to: FileFormat) -> Bool {
         guard from != to, MediaFormats.avVideoInputs.contains(from) else { return false }
         if MediaFormats.avVideoOutputs.contains(to) { return true }
-        // ffmpeg's palette-based GIFs look much better, so only claim GIF without it.
-        if to == .gif { return !ffmpeg.isAvailable }
+        // ffmpeg's palette-based GIFs look much better, so only claim GIF when ffmpeg can't make one
+        // (missing, or a binary that doesn't run and so reports no encoders).
+        if to == .gif { return !ffmpeg.hasEncoder("gif") }
         return MediaFormats.nativeAudioOutputs.contains(to)
     }
 
@@ -28,15 +29,19 @@ public struct AVVideoBackend: ConversionBackend {
         let asset = AVURLAsset(url: input)
         let out = output.file(extension: to.fileExtension)
         context.progress(0)
-        switch to {
-        case .mp4, .mov, .m4v:
-            try await convertVideo(asset, input: input, from: from, to: to, writingTo: out, context: context)
-        case .gif:
-            try await AVHelpers.writeGIF(from: asset, to: out, fps: context.options.gifFPS,
-                                         width: context.options.gifWidth, progress: context.progress)
-        default:
-            try await Self.extractAudio(from: asset, to: to, writingTo: out, options: context.options,
-                                        progress: context.progress)
+        do {
+            switch to {
+            case .mp4, .mov, .m4v:
+                try await convertVideo(asset, input: input, from: from, to: to, writingTo: out, context: context)
+            case .gif:
+                try await AVHelpers.writeGIF(from: asset, to: out, fps: context.options.gifFPS,
+                                             width: context.options.gifWidth, progress: context.progress)
+            default:
+                try await Self.extractAudio(from: asset, to: to, writingTo: out, options: context.options,
+                                            progress: context.progress)
+            }
+        } catch {
+            throw mediaError(error)
         }
         try requireOutput(out)
         context.progress(1)
@@ -49,7 +54,9 @@ public struct AVVideoBackend: ConversionBackend {
             throw ConversionError.unsupported(from: from, to: to.displayName)
         }
         var presets: [String] = []
-        if context.options.videoResolution == .original { presets.append(AVAssetExportPresetPassthrough) }
+        if context.options.videoResolution == .original, await Self.canPassThrough(asset, to: to) {
+            presets.append(AVAssetExportPresetPassthrough)
+        }
         presets.append(Self.reencodePreset(context.options))
 
         var lastError: Error?
@@ -90,6 +97,23 @@ public struct AVVideoBackend: ConversionBackend {
                                          progress: { progress($0 * 0.8) })
             try await NativeAudioBackend.encode(pcm, to: to, writingTo: out, options: options)
         }
+    }
+
+    /// Passthrough happily copies LPCM audio (screen recordings, cameras) or ProRes into an MP4, but the result
+    /// only opens in Apple software (ffmpeg rejects it), so MP4/M4V only pass through standard MP4 codecs.
+    static func canPassThrough(_ asset: AVAsset, to: FileFormat) async -> Bool {
+        guard to == .mp4 || to == .m4v else { return true }
+        let video: Set<FourCharCode> = [kCMVideoCodecType_H264, kCMVideoCodecType_HEVC, kCMVideoCodecType_MPEG4Video]
+        let audio: Set<FourCharCode> = [kAudioFormatMPEG4AAC, kAudioFormatMPEG4AAC_HE, kAudioFormatMPEG4AAC_HE_V2,
+                                        kAudioFormatMPEG4AAC_LD, kAudioFormatMPEG4AAC_ELD, kAudioFormatAppleLossless,
+                                        kAudioFormatAC3, kAudioFormatEnhancedAC3, kAudioFormatMPEGLayer3]
+        for (mediaType, allowed) in [(AVMediaType.video, video), (.audio, audio)] {
+            for track in (try? await asset.loadTracks(withMediaType: mediaType)) ?? [] {
+                let descriptions = (try? await track.load(.formatDescriptions)) ?? []
+                if descriptions.contains(where: { !allowed.contains(CMFormatDescriptionGetMediaSubType($0)) }) { return false }
+            }
+        }
+        return true
     }
 
     /// Export preset matching the requested codec and resolution.

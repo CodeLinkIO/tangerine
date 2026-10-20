@@ -37,7 +37,7 @@ public struct NativeAudioBackend: ConversionBackend {
         } catch {
             // Core Audio rejects some files it nominally supports (odd MP3 headers, AMR variants); ffmpeg is more lenient.
             let fallback = FFmpegMediaBackend(ffmpeg: ffmpeg)
-            guard fallback.supports(from: from, to: to) else { throw error }
+            guard fallback.supports(from: from, to: to) else { throw mediaError(error) }
             removePartial(out)
             try await fallback.convert(input, to: to, writingTo: out, context: context)
         }
@@ -65,19 +65,40 @@ public struct NativeAudioBackend: ConversionBackend {
         default: throw ConversionError.unsupported(from: FileFormat.detect(input), to: to.displayName)
         }
         do {
-            try await Shell.run(afconvert, args + bitrateArgs + [input.path, out.path])
+            try await runAfconvert(args + bitrateArgs + [input.path, out.path])
         } catch ConversionError.cancelled {
             removePartial(out)
             throw ConversionError.cancelled
         } catch where !bitrateArgs.isEmpty {
             // AAC only accepts certain bitrates for a given rate/channel count; let the encoder pick.
             removePartial(out)
-            try await Shell.run(afconvert, args + [input.path, out.path])
+            do {
+                try await runAfconvert(args + [input.path, out.path])
+            } catch {
+                removePartial(out)
+                throw error
+            }
         } catch {
             removePartial(out)
             throw error
         }
         try requireOutput(out)
+        // afconvert can exit 0 yet write a file nothing can read, e.g. FLAC from under ~0.1 s of audio.
+        guard (try? AVAudioFile(forReading: out)) != nil else {
+            removePartial(out)
+            throw ConversionError.failed("Couldn't write a valid \(to.displayName) file.")
+        }
+    }
+
+    /// Runs afconvert, translating its terse errors such as "Couldn't open input file ('typ?')".
+    private static func runAfconvert(_ arguments: [String]) async throws {
+        do {
+            try await Shell.run(afconvert, arguments)
+        } catch let ConversionError.failed(message) where message.contains("Couldn't open input file") {
+            throw ConversionError.failed("This file is damaged or isn't a supported audio file.")
+        } catch let ConversionError.failed(message) where message.contains("ExtAudioFileCreateWithURL failed (-54)") {
+            throw ConversionError.failed("Permission denied.")
+        }
     }
 
     /// iPhone ringtones are AAC in an `.m4r` file and may be at most 40 seconds long.

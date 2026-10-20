@@ -50,6 +50,8 @@ public enum Shell {
                 }
                 do {
                     try process.run()
+                    // Cancelled before the process started: the cancel handler found nothing to stop.
+                    if cancelled.isSet { process.terminate() }
                 } catch {
                     continuation.resume(throwing: ConversionError.failed("Couldn't start \(executable): \(error.localizedDescription)"))
                 }
@@ -61,6 +63,12 @@ public enum Shell {
     }
 
     /// Finds an executable in common install locations and `$PATH`.
+    /// Where an app bundle may carry its own command-line tools, most preferred first.
+    public static var bundledToolDirectories: [String] {
+        [Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers").path, Bundle.main.resourceURL?.path,
+         Bundle.main.executableURL?.deletingLastPathComponent().path].compactMap { $0 }
+    }
+
     public static func which(_ name: String, extraDirectories: [String] = []) -> String? {
         let pathDirs = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
         let candidates = extraDirectories + ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] + pathDirs

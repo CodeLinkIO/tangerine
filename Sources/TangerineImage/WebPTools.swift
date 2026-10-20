@@ -4,12 +4,8 @@ import TangerineCore
 /// WebP encoding through libwebp's `cwebp`/`gif2webp` (preferred, BSD-licensed and bundleable)
 /// or ffmpeg built with libwebp.
 public enum WebPTools {
-    private static var bundledDirectories: [String] {
-        [Bundle.main.resourceURL?.path, Bundle.main.executableURL?.deletingLastPathComponent().path].compactMap { $0 }
-    }
-
-    public static let cwebp = Shell.which("cwebp", extraDirectories: bundledDirectories)
-    public static let gif2webp = Shell.which("gif2webp", extraDirectories: bundledDirectories)
+    public static let cwebp = Shell.which("cwebp", extraDirectories: Shell.bundledToolDirectories)
+    public static let gif2webp = Shell.which("gif2webp", extraDirectories: Shell.bundledToolDirectories)
 
     public static var canEncode: Bool { cwebp != nil || FFmpeg.shared.hasEncoder("libwebp") }
     public static var canEncodeAnimation: Bool { gif2webp != nil || FFmpeg.shared.hasEncoder("libwebp") }

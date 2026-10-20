@@ -167,7 +167,8 @@ final class WheelController: NSObject, NSWindowDelegate {
         case .convert:
             let available = engine.targets(for: files)
             guard !available.isEmpty else { return [] }
-            let category = engine.expand(files).lazy.compactMap(FileFormat.detect).first?.category ?? .image
+            // Same sample as `targets(for:)`; a full expansion would walk an entire huge folder just to open the wheel.
+            let category = engine.expand(files, limit: Engine.capabilitySampleSize).lazy.compactMap(FileFormat.detect).first?.category ?? .image
             let shown = Preferences.shared.wheelTargets(category: category, available: available)
             return shown.map(WheelItem.convert) + [.more]
         case .tools:

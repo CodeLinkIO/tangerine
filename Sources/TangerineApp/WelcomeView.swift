@@ -56,6 +56,7 @@ struct WelcomeView: View {
     let sample: URL?
     let onDone: () -> Void
     @ObservedObject private var prefs = Preferences.shared
+    @State private var openAtLogin = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -92,10 +93,16 @@ struct WelcomeView: View {
             }
             .padding(.top, 30)
 
-            HStack {
-                Button("Open Converter") { ConverterWindowController.shared.show() }.buttonStyle(.secondary)
+            HStack(spacing: 10) {
+                Toggle("", isOn: $openAtLogin).toggleStyle(.switch).labelsHidden().tint(Theme.orange)
+                Text("Open at login").font(Theme.label(13)).foregroundStyle(Theme.text)
                 Spacer()
-                Button("Get Started", action: onDone).buttonStyle(.primary).keyboardShortcut(.defaultAction)
+                Button("Open Converter") { ConverterWindowController.shared.show() }.buttonStyle(.secondary)
+                Button("Get Started") {
+                    if openAtLogin != prefs.launchAtLogin { prefs.launchAtLogin = openAtLogin }
+                    onDone()
+                }
+                .buttonStyle(.primary).keyboardShortcut(.defaultAction)
             }
             .padding(.top, 26)
         }

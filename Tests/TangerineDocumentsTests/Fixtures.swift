@@ -17,9 +17,17 @@ enum Fixtures {
         case cornerMark
         /// A large noisy photo-like image (for compression).
         case noisyImage
+        /// Small text near the bottom-left corner, for tiny pages.
+        case caption(String)
+        /// Text baked into an image drawn sideways (rotated 90° counterclockwise), as a scanner does
+        /// before setting /Rotate 90 to show it upright.
+        case sidewaysImageText(String)
+        /// Nothing at all.
+        case blank
     }
 
     static let letter = CGSize(width: 612, height: 792)
+    static let a4Landscape = CGSize(width: 842, height: 595)
 
     static func directory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
@@ -29,29 +37,72 @@ enum Fixtures {
         return url
     }
 
-    static func pdf(_ pages: [Page], at url: URL) throws {
+    /// Writes a PDF; `sizes` gives each page's media box (Letter by default). `info` is passed to Core
+    /// Graphics (e.g. owner passwords and permissions).
+    static func pdf(_ pages: [Page], at url: URL, sizes: [CGSize]? = nil, info: [CFString: Any]? = nil) throws {
         var mediaBox = CGRect(origin: .zero, size: letter)
-        guard let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil) else {
+        guard let context = CGContext(url as CFURL, mediaBox: &mediaBox, info as CFDictionary?) else {
             throw ConversionError.failed("fixture")
         }
-        for page in pages {
-            context.beginPDFPage(nil)
+        for (index, page) in pages.enumerated() {
+            let size = sizes?[index] ?? letter
+            var box = CGRect(origin: .zero, size: size)
+            let pageInfo = [kCGPDFContextMediaBox: Data(bytes: &box, count: MemoryLayout<CGRect>.size)] as CFDictionary
+            context.beginPDFPage(pageInfo)
             switch page {
             case let .text(lines):
                 for (index, line) in lines.enumerated() {
-                    draw(line, in: context, at: CGPoint(x: 72, y: 700 - CGFloat(index) * 32), size: 22)
+                    draw(line, in: context, at: CGPoint(x: 72, y: size.height - 92 - CGFloat(index) * 32), size: 22)
                 }
             case let .imageText(text):
                 context.draw(textImage(text), in: CGRect(x: 36, y: 420, width: 540, height: 135))
             case .cornerMark:
                 context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
-                context.fill(CGRect(x: 0, y: letter.height - 100, width: 100, height: 100))
+                context.fill(CGRect(x: 0, y: size.height - 100, width: 100, height: 100))
             case .noisyImage:
                 context.draw(noiseImage(width: 1600, height: 1600), in: CGRect(x: 36, y: 126, width: 540, height: 540))
+            case let .caption(text):
+                draw(text, in: context, at: CGPoint(x: 6, y: 8), size: 12)
+            case let .sidewaysImageText(text):
+                // (x, y) → (width − y, x): text runs bottom to top along the page.
+                context.translateBy(x: size.width, y: 0)
+                context.rotate(by: .pi / 2)
+                context.draw(textImage(text), in: CGRect(x: 126, y: 200, width: 540, height: 135))
+            case .blank:
+                break
             }
             context.endPDFPage()
         }
         context.closePDF()
+    }
+
+    /// Re-saves `url` with `/Rotate` set per page.
+    static func rotate(_ url: URL, _ rotations: [Int], to destination: URL) throws {
+        let document = try XCTUnwrap(PDFDocument(url: url))
+        for (index, rotation) in rotations.enumerated() { document.page(at: index)?.rotation = rotation }
+        XCTAssertTrue(document.write(to: destination))
+    }
+
+    /// Unpacks an EPUB (or any zip) with ditto and returns the folder.
+    static func extract(_ archive: URL, in directory: URL) throws -> URL {
+        let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let (status, log) = try run("/usr/bin/ditto", ["-x", "-k", archive.path, folder.path])
+        XCTAssertEqual(status, 0, log)
+        return folder
+    }
+
+    /// Contents of every attachment that carries data (embedded images).
+    static func attachmentData(in text: NSAttributedString) -> [Data] {
+        var result: [Data] = []
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+            if let data = (value as? NSTextAttachment)?.fileWrapper?.regularFileContents { result.append(data) }
+        }
+        return result
+    }
+
+    /// Every file under `directory`, relative and sorted.
+    static func listing(_ directory: URL) -> [String] {
+        (FileManager.default.subpaths(atPath: directory.path) ?? []).sorted()
     }
 
     static func draw(_ text: String, in context: CGContext, at point: CGPoint, size: CGFloat) {
@@ -128,6 +179,27 @@ enum Fixtures {
         // Bitmap memory rows run top to bottom.
         let offset = yFromTop * context.bytesPerRow + x * 4
         return (Int(data[offset]) + Int(data[offset + 1]) + Int(data[offset + 2])) / 3
+    }
+
+    /// Darkest pixel (0...255 brightness) inside `rect`, measured in pixels from the top-left corner.
+    static func minBrightness(of url: URL, in rect: CGRect) -> Int? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else { return nil }
+        let context = bitmap(width: image.width, height: image.height)
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        guard let data = context.data?.bindMemory(to: UInt8.self, capacity: context.bytesPerRow * image.height) else {
+            return nil
+        }
+        let area = rect.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        var darkest = 255
+        for y in Int(area.minY)..<Int(area.maxY) {
+            for x in Int(area.minX)..<Int(area.maxX) {
+                let offset = y * context.bytesPerRow + x * 4
+                darkest = min(darkest, (Int(data[offset]) + Int(data[offset + 1]) + Int(data[offset + 2])) / 3)
+            }
+        }
+        return darkest
     }
 
     static func assertWellFormedXML(_ data: Data, _ name: String, file: StaticString = #filePath, line: UInt = #line) {

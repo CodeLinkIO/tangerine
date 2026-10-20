@@ -29,13 +29,17 @@ public struct MediaToolBackend: ToolBackend {
         }
         context.progress(0)
         defer { context.progress(1) }
-        switch tool {
-        case .compress where canRead(video: format):
-            return try await compressVideo(input, format: format, output: output, context: context)
-        case .compress:
-            return try await compressAudio(input, format: format, output: output, context: context)
-        default:
-            return try await mute(input, format: format, output: output, context: context)
+        do {
+            switch tool {
+            case .compress where canRead(video: format):
+                return try await compressVideo(input, format: format, output: output, context: context)
+            case .compress:
+                return try await compressAudio(input, format: format, output: output, context: context)
+            default:
+                return try await mute(input, format: format, output: output, context: context)
+            }
+        } catch {
+            throw mediaError(error)
         }
     }
 
@@ -125,7 +129,7 @@ public struct MediaToolBackend: ToolBackend {
                 lastError = error
             }
         }
-        guard ffmpeg.isAvailable else { throw lastError ?? ConversionError.engineMissing("ffmpeg") }
+        guard ffmpegWorks else { throw lastError ?? ConversionError.engineMissing("ffmpeg") }
         do {
             try await FFmpegRunner.run(ffmpeg, ["-i", input.path, "-map", "0:v", "-c", "copy", "-an", out.path],
                                        progress: context.progress)
@@ -157,9 +161,12 @@ public struct MediaToolBackend: ToolBackend {
 
     // MARK: - Capabilities
 
+    /// Installed and actually runs (a binary for the wrong architecture reports no encoders).
+    private var ffmpegWorks: Bool { ffmpeg.isAvailable && !ffmpeg.encoders.isEmpty }
+
     private func canRead(video format: FileFormat) -> Bool {
         MediaFormats.avVideoInputs.contains(format)
-            || (ffmpeg.isAvailable && MediaFormats.ffmpegOnlyVideoInputs.contains(format))
+            || (ffmpegWorks && MediaFormats.ffmpegOnlyVideoInputs.contains(format))
     }
 
     private func canRead(audio format: FileFormat) -> Bool {

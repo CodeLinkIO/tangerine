@@ -39,13 +39,25 @@ struct ImageConversionBackend: ConversionBackend {
 
     func convert(_ input: URL, from: FileFormat, to: FileFormat, output: OutputPlan,
                  context: ConversionContext) async throws -> [URL] {
-        let options = context.options
         let destination = output.file(extension: to.fileExtension)
+        do {
+            try await convert(input, from: from, to: to, destination: destination, context: context)
+        } catch {
+            // External encoders (cwebp, gif2webp, ffmpeg) can leave an empty or broken file behind.
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
+        return [destination]
+    }
+
+    private func convert(_ input: URL, from: FileFormat, to: FileFormat, destination: URL,
+                         context: ConversionContext) async throws {
+        let options = context.options
 
         // Animated GIFs keep their animation when going to WebP or MP4.
         if from == .gif, to == .mp4 || (to == .webp && WebPTools.canEncodeAnimation) {
             try await convertAnimatedGIF(input, to: to, destination: destination, quality: options.imageQuality)
-            return [destination]
+            return
         }
 
         let loaded = try ImageCodec.load(input, maxPixelSize: options.imageMaxPixelSize)
@@ -53,7 +65,18 @@ struct ImageConversionBackend: ConversionBackend {
         if to == .txt {
             let text = try TextRecognition.recognize(loaded.image)
             try text.write(to: destination, atomically: true, encoding: .utf8)
-            return [destination]
+            return
+        }
+        if to == .pdf, from == .tiff, loaded.frameCount > 1 {
+            // Multi-page TIFFs (scans, faxes) keep every page.
+            var pages = [(loaded.image, loaded.dpi)]
+            for index in 1..<loaded.frameCount {
+                let page = try ImageCodec.load(input, maxPixelSize: options.imageMaxPixelSize, frame: index)
+                pages.append((page.image, page.dpi))
+                context.progress(0.5 + 0.4 * Double(index) / Double(loaded.frameCount))
+            }
+            try ImageCodec.writePDF(pages, to: destination)
+            return
         }
         try await ImageCodec.write(loaded.image, as: to, to: destination, options: .init(
             quality: options.imageQuality,
@@ -61,7 +84,6 @@ struct ImageConversionBackend: ConversionBackend {
             properties: options.stripImageMetadata ? nil : loaded.properties,
             dpi: loaded.dpi
         ))
-        return [destination]
     }
 
     private func convertAnimatedGIF(_ input: URL, to: FileFormat, destination: URL, quality: Double) async throws {
@@ -70,8 +92,13 @@ struct ImageConversionBackend: ConversionBackend {
             return
         }
         let encoder = FFmpeg.shared.hasEncoder("h264_videotoolbox") ? "h264_videotoolbox" : "libx264"
-        // Even dimensions are required by H.264.
-        var arguments = ["-i", input.path, "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", encoder,
+        // H.264 needs even dimensions (at least 2 px; ffmpeg crashes on 0). A still GIF is held for a second,
+        // otherwise it becomes a single 10 ms frame most players never show.
+        var filter = "scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)'"
+        if let source = CGImageSourceCreateWithURL(input as CFURL, nil), CGImageSourceGetCount(source) == 1 {
+            filter += ",tpad=stop_mode=clone:stop_duration=1,fps=30"
+        }
+        var arguments = ["-i", input.path, "-vf", filter, "-c:v", encoder,
                          "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
         arguments += encoder == "h264_videotoolbox" ? ["-q:v", "65"] : ["-crf", "20"]
         try await FFmpeg.shared.run(arguments + [destination.path])
@@ -152,8 +179,9 @@ struct ImageToolBackend: ToolBackend {
             let longest = max(loaded.image.width, loaded.image.height)
             guard longest > limit else { return ToolOutput(note: "Already within \(limit) px") }
             let scale = Double(limit) / Double(longest)
-            recipe.outputSize = CGSize(width: (Double(loaded.image.width) * scale).rounded(),
-                                       height: (Double(loaded.image.height) * scale).rounded())
+            // At least 1 px: a zero side would make the renderer skip the resize entirely.
+            recipe.outputSize = CGSize(width: max(1, (Double(loaded.image.width) * scale).rounded()),
+                                       height: max(1, (Double(loaded.image.height) * scale).rounded()))
             suffix = "\(limit)px"
         case .trimTransparent:
             guard let bounds = OpaqueBounds.find(in: loaded.image) else {
@@ -164,6 +192,8 @@ struct ImageToolBackend: ToolBackend {
             suffix = "trimmed"
         case .makeSquare:
             guard loaded.image.width != loaded.image.height else { return ToolOutput(note: "Already square") }
+            let side = max(loaded.image.width, loaded.image.height)
+            try ImageCodec.checkPixelBudget(width: side, height: side, name: input.lastPathComponent)
             let background: SolidColor? = ImageCodec.supportsAlpha(outputFormat) ? nil : options.flattenBackground
             let square = ImageCodec.padded(toSquare: loaded.image, background: background)
             let destination = output.file(extension: outputFormat.fileExtension, suffix: "square")
@@ -210,22 +240,30 @@ struct ImageToolBackend: ToolBackend {
     }
 
     private func stripMetadata(_ input: URL, format: FileFormat, output: OutputPlan, options: ConversionOptions) async throws -> URL {
-        // Lossless path: copy the compressed image data with empty metadata, keeping only orientation.
-        if [.jpg, .png, .tiff, .heic].contains(format),
+        // Lossless path for JPEG: copy the compressed data with fresh metadata holding only the orientation.
+        // ImageIO rejects kCGImageDestinationOrientation next to kCGImageDestinationMetadata, so the orientation
+        // goes in the metadata itself. HEIC, PNG and TIFF copies keep some tags (e.g. the capture date), so they
+        // re-encode below; the check after copying guards against that changing.
+        if format == .jpg,
            let source = CGImageSourceCreateWithURL(input as CFURL, nil),
            let type = CGImageSourceGetType(source) {
             let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
             let orientation = properties?[kCGImagePropertyOrientation] as? UInt32 ?? 1
+            let metadata = CGImageMetadataCreateMutable()
+            if orientation != 1 {
+                CGImageMetadataSetValueMatchingImageProperty(metadata, kCGImagePropertyTIFFDictionary,
+                                                             kCGImagePropertyTIFFOrientation, orientation as CFNumber)
+            }
             let destinationURL = output.file(extension: format.fileExtension, suffix: "clean")
             if let destination = CGImageDestinationCreateWithURL(destinationURL as CFURL, type, 1, nil) {
                 let copyOptions: [CFString: Any] = [
-                    kCGImageDestinationMetadata: CGImageMetadataCreateMutable(),
+                    kCGImageDestinationMetadata: metadata,
                     kCGImageDestinationMergeMetadata: false,
                     kCGImageMetadataShouldExcludeXMP: true,
                     kCGImageMetadataShouldExcludeGPS: true,
-                    kCGImageDestinationOrientation: orientation,
                 ]
-                if CGImageDestinationCopyImageSource(destination, source, copyOptions as CFDictionary, nil) {
+                if CGImageDestinationCopyImageSource(destination, source, copyOptions as CFDictionary, nil),
+                   Self.hasNoPrivateMetadata(destinationURL) {
                     return destinationURL
                 }
             }
@@ -237,6 +275,16 @@ struct ImageToolBackend: ToolBackend {
         try await ImageCodec.write(loaded.image, as: outputFormat, to: destination,
                                    options: .init(quality: 0.95, background: options.flattenBackground, properties: nil, dpi: loaded.dpi))
         return destination
+    }
+
+    /// Double-checks a lossless copy really dropped EXIF and GPS before handing it out.
+    private static func hasNoPrivateMetadata(_ url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        else { return false }
+        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+        return properties[kCGImagePropertyGPSDictionary] == nil && properties[kCGImagePropertyExifDictionary] == nil
+            && tiff?[kCGImagePropertyTIFFMake] == nil && tiff?[kCGImagePropertyTIFFModel] == nil
     }
 }
 

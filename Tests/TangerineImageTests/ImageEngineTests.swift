@@ -14,6 +14,9 @@ final class ImageEngineTests: XCTestCase {
         temp = try TemporaryDirectory()
     }
 
+    // XCTest keeps every test case alive until the run ends; release the folder so it gets deleted.
+    override func tearDown() { temp = nil }
+
     // MARK: Fixtures
 
     /// 200×100 image: red square top-left, blue bottom-right, gradient elsewhere.

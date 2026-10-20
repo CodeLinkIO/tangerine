@@ -8,6 +8,8 @@ final class EditorPipeline: @unchecked Sendable {
     /// Color space previews and exports render in (the source's RGB space, else sRGB).
     let colorSpace: CGColorSpace
     let sourceHasAlpha: Bool
+    /// Frames or pages in the file; only the first is edited.
+    let frameCount: Int
 
     private let lock = NSLock()
     private var fullImage: LoadedImage?
@@ -16,6 +18,7 @@ final class EditorPipeline: @unchecked Sendable {
     init(preview: LoadedImage) {
         previewSource = CIImage(cgImage: preview.image)
         sourceHasAlpha = preview.hasAlpha
+        frameCount = preview.frameCount
         if let space = preview.image.colorSpace, space.model == .rgb {
             colorSpace = space
         } else {
@@ -48,7 +51,9 @@ final class EditorPipeline: @unchecked Sendable {
     /// Full-resolution render of `recipe` (needs the full image to be loaded).
     private func renderFull(_ recipe: EditRecipe) throws -> (CGImage, LoadedImage) {
         guard let full else { throw ConversionError.failed("The image is still loading.") }
-        let image = try renderer.render(renderer.apply(recipe, to: CIImage(cgImage: full.image)), colorSpace: colorSpace)
+        // Opaque sources stay opaque, so PNG/HEIC/TIFF saves don't carry an empty alpha channel.
+        let image = try renderer.render(renderer.apply(recipe, to: CIImage(cgImage: full.image)), colorSpace: colorSpace,
+                                        opaque: !sourceHasAlpha)
         return (image, full)
     }
 

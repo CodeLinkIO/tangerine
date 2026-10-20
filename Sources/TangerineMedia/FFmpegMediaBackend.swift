@@ -33,8 +33,8 @@ public struct FFmpegMediaBackend: ConversionBackend {
     /// Converts into an exact path; used by other backends as a fallback.
     func convert(_ input: URL, to: FileFormat, writingTo out: URL, context: ConversionContext) async throws {
         context.progress(0)
-        if to == .mkv {
-            // Most streams fit in Matroska as-is, which is lossless and near-instant.
+        if to == .mkv, context.options.videoResolution == .original {
+            // Most streams fit in Matroska as-is, which is lossless and near-instant. A size cap needs a re-encode.
             do {
                 try await FFmpegRunner.run(ffmpeg, ["-i", input.path, "-map", "0:v:0", "-map", "0:a?", "-c", "copy", out.path],
                                            progress: context.progress)
@@ -111,7 +111,8 @@ public struct FFmpegMediaBackend: ConversionBackend {
             args = ["-t", format(MediaFormats.gifMaxSeconds), "-i", input.path]
             let fps = max(1, min(options.gifFPS, 50))
             let width = max(16, options.gifWidth)
-            args += ["-vf", "fps=\(fps),scale='min(\(width),iw)':-1:flags=lanczos,split[s0][s1];"
+            // eof_action=pass keeps the frame of clips shorter than one GIF frame, which fps would otherwise drop.
+            args += ["-vf", "fps=\(fps):eof_action=pass,scale='min(\(width),iw)':-1:flags=lanczos,split[s0][s1];"
                 + "[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
                      "-loop", "0"]
             return args + [output.path]
@@ -141,7 +142,7 @@ public struct FFmpegMediaBackend: ConversionBackend {
                     : ["-c:a", "pcm_s16le"]
             case .wmv:
                 args += ["-c:v", "wmv2", "-q:v", "\(mpeg4Scale(options))", "-pix_fmt", "yuv420p",
-                         "-c:a", "wmav2", "-b:a", "\(min(bitrate, 192))k"]
+                         "-c:a", "wmav2", "-b:a", "\(min(bitrate, 192))k", "-af", Self.wmaAudioFormat]
             default: // mp4, mov, m4v, mkv (re-encode)
                 args += videoCodecArguments(options)
                 args += ["-c:a", aacEncoder ?? "aac", "-b:a", "\(min(bitrate, 320))k"]
@@ -176,7 +177,7 @@ public struct FFmpegMediaBackend: ConversionBackend {
             args += ffmpeg.hasEncoder("libopus")
                 ? ["-c:a", "libopus", "-b:a", "\(min(bitrate, 256))k"]
                 : ["-c:a", "opus", "-strict", "-2"]
-        case .wma: args += ["-c:a", "wmav2", "-b:a", "\(min(bitrate, 192))k"]
+        case .wma: args += ["-c:a", "wmav2", "-b:a", "\(min(bitrate, 192))k", "-af", Self.wmaAudioFormat]
         default: break
         }
         // Opus only supports a few sample rates; ffmpeg picks a valid one automatically.
@@ -185,6 +186,9 @@ public struct FFmpegMediaBackend: ConversionBackend {
         }
         return args + [output.path]
     }
+
+    /// wmav2 rejects more than two channels and rates above 48 kHz; this lets ffmpeg downmix/resample only when needed.
+    static let wmaAudioFormat = "aformat=sample_rates=48000|44100|32000|22050|16000|11025|8000:channel_layouts=mono|stereo"
 
     private func clampedQuality(_ options: ConversionOptions) -> Double {
         min(max(options.videoQuality, 0), 1)
@@ -210,9 +214,10 @@ public struct FFmpegMediaBackend: ConversionBackend {
     }
 
     /// Keeps dimensions even (required by yuv420p) and caps the short side for presets like 1080p.
+    /// `setsar=1` keeps pixels square; otherwise scale's rounding leaves a sample aspect like 1280:1281.
     func scaleFilter(_ resolution: VideoResolution) -> String {
-        guard let side = resolution.maxHeight else { return "scale=trunc(iw/2)*2:trunc(ih/2)*2" }
-        return "scale='if(gte(iw,ih),-2,min(\(side),trunc(iw/2)*2))':'if(gte(iw,ih),min(\(side),trunc(ih/2)*2),-2)'"
+        guard let side = resolution.maxHeight else { return "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1" }
+        return "scale='if(gte(iw,ih),-2,min(\(side),trunc(iw/2)*2))':'if(gte(iw,ih),min(\(side),trunc(ih/2)*2),-2)',setsar=1"
     }
 
     private func format(_ seconds: Double) -> String {

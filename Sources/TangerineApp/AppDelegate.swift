@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if AppLocation.offerMoveIfNeeded() { return }
         statusItem = StatusItemController()
         NSApp.servicesProvider = services
         NSUpdateDynamicServices()

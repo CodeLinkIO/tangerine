@@ -20,7 +20,15 @@ public struct JobReport: Sendable {
         public var message: String
     }
 
+    /// An input that produced files, with the files it produced.
+    public struct Converted: Sendable {
+        public var input: URL
+        public var outputs: [URL]
+    }
+
     public var outputs: [URL] = []
+    /// Per-input results in input order (per-file jobs only; combined tools such as Merge PDF leave this empty).
+    public var converted: [Converted] = []
     public var failures: [Failure] = []
     public var notes: [String] = []
     /// Text produced by text tools (OCR); the app copies it to the clipboard.
@@ -36,6 +44,26 @@ public struct JobReport: Sendable {
     public var sizeChangePercent: Int? {
         guard comparesSize, inputBytes > 0, outputBytes > 0 else { return nil }
         return Int((Double(outputBytes - inputBytes) / Double(inputBytes) * 100).rounded())
+    }
+
+    /// Originals that "replace originals" may move to the Trash: none if anything failed, otherwise only inputs
+    /// this job converted whose own output exists, isn't the input itself, and wasn't also reported for another input.
+    public var replaceableOriginals: [URL] {
+        guard failures.isEmpty else { return [] }
+        // Same normalization as output naming: APFS ignores case and Unicode form.
+        func key(_ url: URL) -> String { url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased() }
+        var owners: [String: Int] = [:]
+        for item in converted {
+            for output in Set(item.outputs.map(key)) { owners[output, default: 0] += 1 }
+        }
+        let written = Set(outputs.map(key))
+        return converted.compactMap { item in
+            let input = key(item.input)
+            let ownOutputs = item.outputs.filter { key($0) != input && owners[key($0)] == 1 }
+            guard !written.contains(input), !ownOutputs.isEmpty,
+                  ownOutputs.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else { return nil }
+            return item.input
+        }
     }
 
     /// One-line summary for HUDs and the CLI.
@@ -127,26 +155,41 @@ public final class Engine: @unchecked Sendable {
     // MARK: Inputs
 
     /// Capability checks (wheel contents) look at this many files at most, so huge folders open instantly.
-    static let capabilitySampleSize = 500
+    public static let capabilitySampleSize = 500
 
-    /// Files plus the supported files inside any folders (recursively, skipping hidden items and packages),
-    /// stopping after `limit` files when given.
+    /// Files plus the supported files inside any folders (recursively, in Finder order, skipping hidden items
+    /// and packages), each file once, stopping after `limit` files when given.
     public func expand(_ inputs: [URL], limit: Int? = nil) -> [URL] {
         var result: [URL] = []
+        var seen = Set<AnyHashable>()
         let fm = FileManager.default
+        func add(_ url: URL) {
+            // The file's identity, so a file selected directly and through its folder is only processed once.
+            let identity = (try? url.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier) as? NSObject
+            if seen.insert(identity.map(AnyHashable.init) ?? AnyHashable(url.standardizedFileURL.path)).inserted {
+                result.append(url)
+            }
+        }
         for url in inputs {
             if let limit, result.count >= limit { break }
             var isDirectory: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
             if isDirectory.boolValue, FileFormat.detect(url) == nil {
-                let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey],
+                // Follow a dropped symlink; never open packages (apps, Photos libraries…), whose files aren't the user's to convert.
+                let folder = url.resolvingSymlinksInPath()
+                if (try? folder.resourceValues(forKeys: [.isPackageKey]).isPackage) == true { continue }
+                var found: [URL] = []
+                let enumerator = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .fileResourceIdentifierKey],
                                                options: [.skipsHiddenFiles, .skipsPackageDescendants])
                 while let item = enumerator?.nextObject() as? URL {
-                    if FileFormat.detect(item) != nil { result.append(item) }
-                    if let limit, result.count >= limit { break }
+                    if FileFormat.detect(item) != nil { found.append(item) }
+                    if let limit, result.count + found.count >= limit { break }
                 }
+                // Finder order, so merged pages and batch results go page1, page2… page10.
+                found.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+                found.forEach(add)
             } else if FileFormat.detect(url) != nil {
-                result.append(url)
+                add(url)
             }
         }
         return result
@@ -166,6 +209,25 @@ public final class Engine: @unchecked Sendable {
         return FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first ?? parent
     }
 
+    /// Checks a chosen output folder once per job (creating it when missing) so a bad folder gives one clear error.
+    static func prepareOutputDirectory(_ url: URL?) throws {
+        guard let url else { return }
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        if !fm.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            do {
+                try fm.createDirectory(at: url, withIntermediateDirectories: true)
+            } catch {
+                throw ConversionError.failed("Couldn't create the output folder “\(url.lastPathComponent)”.")
+            }
+        } else if !isDirectory.boolValue {
+            throw ConversionError.failed("The output folder “\(url.lastPathComponent)” is a file.")
+        }
+        guard fm.isWritableFile(atPath: url.path) else {
+            throw ConversionError.failed("Can't save into “\(url.lastPathComponent)”. Choose another output folder.")
+        }
+    }
+
     // MARK: Running
 
     /// Converts every input to `target`. Inputs that already are `target` are skipped.
@@ -174,13 +236,17 @@ public final class Engine: @unchecked Sendable {
                         progress: @escaping @Sendable (JobProgress) -> Void = { _ in }) async throws -> JobReport {
         let files = expand(inputs).filter { FileFormat.detect($0) != target }
         guard !files.isEmpty else { throw ConversionError.unsupported(from: nil, to: target.displayName) }
+        try Self.prepareOutputDirectory(outputDirectory)
+        let reservations = OutputReservations()
+        defer { reservations.release() }
         let mediaCategories: Set<FormatCategory> = [.image, .audio, .video]
         let sameFamily = files.allSatisfy { FileFormat.detect($0)?.category == target.category } && mediaCategories.contains(target.category)
         var report = try await runEach(files, progress: progress) { file, context in
             guard let from = FileFormat.detect(file), let backend = self.backend(from: from, to: target) else {
                 throw ConversionError.unsupported(from: FileFormat.detect(file), to: target.displayName)
             }
-            let plan = OutputPlan(for: file, directory: Self.outputDirectory(for: file, preferred: outputDirectory))
+            let plan = OutputPlan(for: file, directory: Self.outputDirectory(for: file, preferred: outputDirectory),
+                                  reservations: reservations)
             var context = context
             context.options = options
             return ToolOutput(files: try await backend.convert(file, from: from, to: target, output: plan, context: context))
@@ -198,12 +264,16 @@ public final class Engine: @unchecked Sendable {
             throw ConversionError.unsupported(from: nil, to: tool.title)
         }
         guard !tool.isInteractive else { throw ConversionError.failed("\(tool.title) opens in the app.") }
+        try Self.prepareOutputDirectory(outputDirectory)
+        let reservations = OutputReservations()
+        defer { reservations.release() }
 
         if tool.combinesInputs {
             guard let backend = toolBackend(tool, firstFormat) else {
                 throw ConversionError.unsupported(from: firstFormat, to: tool.title)
             }
-            let plan = OutputPlan(for: first, directory: Self.outputDirectory(for: first, preferred: outputDirectory))
+            let plan = OutputPlan(for: first, directory: Self.outputDirectory(for: first, preferred: outputDirectory),
+                                  reservations: reservations)
             let context = ConversionContext(options: options) { fraction in
                 progress(JobProgress(completedFiles: 0, totalFiles: 1, fraction: fraction, currentFile: first))
             }
@@ -221,7 +291,8 @@ public final class Engine: @unchecked Sendable {
             guard let format = FileFormat.detect(file), let backend = self.toolBackend(tool, format) else {
                 throw ConversionError.unsupported(from: FileFormat.detect(file), to: tool.title)
             }
-            let plan = OutputPlan(for: file, directory: Self.outputDirectory(for: file, preferred: outputDirectory))
+            let plan = OutputPlan(for: file, directory: Self.outputDirectory(for: file, preferred: outputDirectory),
+                                  reservations: reservations)
             var context = context
             context.options = options
             return try await backend.run(tool, inputs: [file], output: plan, context: context)
@@ -250,6 +321,7 @@ public final class Engine: @unchecked Sendable {
                 group.addTask {
                     let context = ConversionContext { fraction in tracker.update(index: index, fraction: fraction, file: file) }
                     do {
+                        try Task.checkCancellation()
                         let output = try await work(file, context)
                         tracker.finish(index: index, file: file)
                         return (index, .success(output))
@@ -273,8 +345,11 @@ public final class Engine: @unchecked Sendable {
             switch result {
             case let .success(output):
                 report.outputs += output.files
+                if !output.files.isEmpty { report.converted.append(.init(input: file, outputs: output.files)) }
                 if let note = output.note { report.notes.append(note) }
-                if let text = output.text { report.text = [report.text, text].compactMap { $0 }.joined(separator: "\n\n") }
+                if let text = output.text, !text.isEmpty {
+                    report.text = [report.text, text].compactMap { $0 }.joined(separator: "\n\n")
+                }
                 if !output.files.isEmpty { report.inputBytes += file.fileSize }
             case let .failure(error):
                 if error is CancellationError || (error as? ConversionError).map({ if case .cancelled = $0 { true } else { false } }) == true {
@@ -288,7 +363,8 @@ public final class Engine: @unchecked Sendable {
     }
 }
 
-/// Aggregates per-file progress into an overall fraction.
+/// Aggregates per-file progress into an overall fraction. Reports are delivered while holding the lock,
+/// so callers see them in order and the fraction never goes backwards.
 private final class ProgressTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var fractions: [Int: Double] = [:]
@@ -303,19 +379,18 @@ private final class ProgressTracker: @unchecked Sendable {
 
     func update(index: Int, fraction: Double, file: URL) {
         lock.lock()
-        fractions[index] = min(max(fraction, 0), 1)
-        let snapshot = JobProgress(completedFiles: completed, totalFiles: total, fraction: overall, currentFile: file)
-        lock.unlock()
-        report(snapshot)
+        defer { lock.unlock() }
+        // A file's progress only moves forward, even when a backend restarts it (e.g. a retry) or reports late.
+        fractions[index] = max(fractions[index] ?? 0, min(max(fraction, 0), 1))
+        report(JobProgress(completedFiles: completed, totalFiles: total, fraction: overall, currentFile: file))
     }
 
     func finish(index: Int, file: URL) {
         lock.lock()
+        defer { lock.unlock() }
         fractions[index] = 1
         completed += 1
-        let snapshot = JobProgress(completedFiles: completed, totalFiles: total, fraction: overall, currentFile: file)
-        lock.unlock()
-        report(snapshot)
+        report(JobProgress(completedFiles: completed, totalFiles: total, fraction: overall, currentFile: file))
     }
 
     private var overall: Double {

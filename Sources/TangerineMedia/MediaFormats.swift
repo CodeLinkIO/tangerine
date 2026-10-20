@@ -36,6 +36,23 @@ func removePartial(_ url: URL) {
     try? FileManager.default.removeItem(at: url)
 }
 
+/// Turns AVFoundation and task-cancellation errors into `ConversionError`s, so users see
+/// "Cannot Open: This media may be damaged." rather than just "Cannot Open".
+func mediaError(_ error: Error) -> Error {
+    switch error {
+    case is ConversionError: return error
+    case is CancellationError: return ConversionError.cancelled
+    default:
+        let error = error as NSError
+        let description = error.localizedDescription
+        guard let reason = error.localizedFailureReason,
+              !description.localizedCaseInsensitiveContains(reason.trimmingCharacters(in: .punctuationCharacters)) else {
+            return ConversionError.failed(description)
+        }
+        return ConversionError.failed("\(description): \(reason)")
+    }
+}
+
 /// Throws when the output is missing or empty, which some encoders produce on silent failure.
 func requireOutput(_ url: URL) throws {
     guard url.fileSize > 0 else {

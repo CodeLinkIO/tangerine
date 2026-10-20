@@ -11,6 +11,9 @@ final class EngineTests: XCTestCase {
         temp = try TemporaryDirectory()
     }
 
+    // XCTest keeps every test case alive until the run ends; release the folder so it gets deleted.
+    override func tearDown() { temp = nil }
+
     private func image(_ name: String, type: String = "public.jpeg") throws -> URL {
         let context = CGContext(data: nil, width: 64, height: 48, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpace(name: CGColorSpace.sRGB)!,

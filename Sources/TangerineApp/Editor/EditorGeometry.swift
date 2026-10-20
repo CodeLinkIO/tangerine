@@ -47,7 +47,7 @@ enum EditorResize: Equatable {
     case percent(Int)
     /// Fit the longest edge within this many pixels (never upscales).
     case longEdge(Int)
-    /// Exact size; with `locked`, the height follows the width and the crop's aspect.
+    /// Exact size; with `locked`, the height follows the width and the crop's aspect (to the nearest pixel).
     case custom(width: Int, height: Int, locked: Bool)
 
     static let presets: [EditorResize] = [.original, .percent(25), .percent(50), .percent(75), .longEdge(1080), .longEdge(2048)]
@@ -79,7 +79,12 @@ enum EditorResize: Equatable {
             return CGSize(width: max(1, (cropped.width * s).rounded()), height: max(1, (cropped.height * s).rounded()))
         case let .custom(width, height, locked):
             let w = CGFloat(max(1, width))
-            let h = locked ? max(1, (w * cropped.height / cropped.width).rounded()) : CGFloat(max(1, height))
+            guard locked else { return CGSize(width: w, height: CGFloat(max(1, height))) }
+            // A stored height within rounding of the crop's aspect was typed (or derived) for this crop; keep it,
+            // otherwise typing 1000 on a portrait image could come back as 1001.
+            let exact = w * cropped.height / cropped.width
+            let tolerance = max(0.5, cropped.height / cropped.width / 2) + 0.01
+            let h = abs(CGFloat(height) - exact) <= tolerance ? CGFloat(max(1, height)) : max(1, exact.rounded())
             return CGSize(width: w, height: h)
         }
     }

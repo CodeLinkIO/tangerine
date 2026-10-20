@@ -27,10 +27,14 @@ enum DocumentSource {
         case .pdf:
             return .pdf(try PDFTextExtractor.extract(url, progress: context.progress))
         case .webarchive:
-            // Web archives are decoded by WebKit, which must run on the main thread.
-            return .rich(try await MainActor.run { Unchecked(try readRich(url, type: .webArchive)) }.value)
+            // Read through the sanitizer rather than WebKit's archive loader, which fetches anything not archived.
+            return .rich(try await importHTML(try WebArchive.html(url), baseURL: nil))
         default:
-            guard let type = richTypes[format] else { throw ConversionError.unsupported(from: format, to: "text") }
+            guard var type = richTypes[format] else { throw ConversionError.unsupported(from: format, to: "text") }
+            // Many ".doc" files are really RTF (Word's and older exporters' "Rich Text" saves).
+            if format == .doc, (try? Data(contentsOf: url, options: .alwaysMapped))?.starts(with: Array("{\\rtf".utf8)) == true {
+                type = .rtf
+            }
             return .rich(try readRich(url, type: type))
         }
     }
@@ -133,7 +137,8 @@ enum DocumentSource {
         return NSAttributedString(string: text, attributes: [.font: bodyFont, .paragraphStyle: style])
     }
 
-    /// Reads text as UTF-8 (with or without BOM), UTF-16, or the encoding Foundation detects, else Latin-1.
+    /// Reads text as UTF-8 (with or without BOM), UTF-16 with a BOM, the encoding saved with the file,
+    /// or a detected legacy encoding (Windows-1252, Shift-JIS, GB 18030…), else Latin-1.
     static func readText(_ url: URL) throws -> String {
         let data: Data
         do { data = try Data(contentsOf: url) } catch { throw ConversionError.unreadable(url) }
@@ -146,7 +151,15 @@ enum DocumentSource {
         }
         var encoding = String.Encoding.utf8
         if let text = try? String(contentsOf: url, usedEncoding: &encoding) { return text }
-        return String(data: data, encoding: .isoLatin1) ?? ""
+        // Latin-1 would turn Windows-1252 quotes and euro signs into control characters and garble CJK text.
+        // Suggesting the common encodings (without excluding others) gives the most reliable detection.
+        var converted: NSString?
+        let detected = NSString.stringEncoding(for: data, encodingOptions: [
+            .suggestedEncodingsKey: [String.Encoding.windowsCP1252.rawValue, String.Encoding.shiftJIS.rawValue],
+            .allowLossyKey: false,
+        ], convertedString: &converted, usedLossyConversion: nil)
+        if detected != 0, let converted { return converted as String }
+        return String(data: data, encoding: .windowsCP1252) ?? String(data: data, encoding: .isoLatin1) ?? ""
     }
 
     static func readRich(_ url: URL, type: NSAttributedString.DocumentType) throws -> NSAttributedString {
@@ -157,9 +170,11 @@ enum DocumentSource {
         }
     }
 
-    /// HTML import goes through WebKit, which must run on the main thread.
+    /// HTML import goes through WebKit, which must run on the main thread. The HTML is sanitized first so
+    /// the import stays offline and only reads images inside the document's folder.
     static func importHTML(_ html: String, baseURL: URL?) async throws -> NSAttributedString {
-        try await MainActor.run { () throws -> Unchecked<NSAttributedString> in
+        let html = HTMLSanitizer.sanitize(html) { HTMLSanitizer.localReference($0, allowRelative: baseURL != nil) }
+        return try await MainActor.run { () throws -> Unchecked<NSAttributedString> in
             var options: [NSAttributedString.DocumentReadingOptionKey: Any] = [
                 .documentType: NSAttributedString.DocumentType.html,
                 .characterEncoding: String.Encoding.utf8.rawValue,

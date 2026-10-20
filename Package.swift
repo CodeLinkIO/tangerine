@@ -34,5 +34,7 @@ let package = Package(
         .testTarget(name: "TangerineMediaTests", dependencies: ["TangerineMedia"], swiftSettings: v5),
         .testTarget(name: "TangerineDocumentsTests", dependencies: ["TangerineDocuments"], swiftSettings: v5),
         .testTarget(name: "TangerineKitTests", dependencies: ["TangerineKit"], swiftSettings: v5),
+        .testTarget(name: "TangerineCLITests", dependencies: ["TangerineCLI"], swiftSettings: v5),
+        .testTarget(name: "TangerineAppTests", dependencies: ["TangerineApp"], swiftSettings: v5),
     ]
 )

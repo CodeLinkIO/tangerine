@@ -9,6 +9,8 @@ enum PNGQuantizer {
     static func encode(_ image: CGImage, colors: Int = 256, dithering: Float = 0.75) throws -> Data {
         let width = image.width, height = image.height
         guard width > 0, height > 0 else { throw ConversionError.failed("Empty image.") }
+        // Quantizing holds several full-size buffers at once.
+        try ImageCodec.checkPixelBudget(width: width, height: height)
         var pixels = try rgba(image)
         let palette = medianCut(pixels, maxColors: colors)
         let indices = map(&pixels, width: width, height: height, palette: palette, dithering: dithering)
@@ -103,7 +105,9 @@ enum PNGQuantizer {
         var palette: [SIMD4<UInt8>] = hasTransparent ? [SIMD4(0, 0, 0, 0)] : []
         guard !samples.isEmpty else { return palette.isEmpty ? [SIMD4(0, 0, 0, 255)] : palette }
 
-        var boxes = [Box(samples)]
+        // Opaque and translucent pixels start in separate boxes, so opaque areas always get opaque entries.
+        var boxes = [samples.filter { $0[3] == 255 }, samples.filter { $0[3] < 255 }].filter { !$0.isEmpty }.map(Box.init)
+        if boxes.count > budget { boxes = [Box(samples)] }
         while boxes.count < budget {
             // Split the most spread-out box that can still be split.
             guard let index = boxes.indices
@@ -135,14 +139,17 @@ enum PNGQuantizer {
         var cache = [Int16](repeating: -1, count: 1 << 20)
         let transparentIndex = palette.firstIndex(where: { $0[3] == 0 })
         let paletteInt = palette.map { SIMD4<Int32>(truncatingIfNeeded: $0) }
+        let allEntries = Array(paletteInt.indices), opaqueEntries = allEntries.filter { paletteInt[$0][3] == 255 }
 
         func nearest(_ c: SIMD4<Int32>) -> Int {
-            // Fully opaque pixels get their own alpha bucket so they never reuse a translucent match.
+            // Fully opaque pixels get their own alpha bucket and only match opaque entries, so they never turn translucent.
+            let opaque = c[3] >= 255 && !opaqueEntries.isEmpty
             let alphaKey = c[3] >= 255 ? 31 : min(30, Int(c[3] >> 3))
             let key = Int(c[0] >> 3) << 15 | Int(c[1] >> 3) << 10 | Int(c[2] >> 3) << 5 | alphaKey
             if cache[key] >= 0 { return Int(cache[key]) }
             var best = 0, bestDistance = Int32.max
-            for (i, p) in paletteInt.enumerated() {
+            for i in opaque ? opaqueEntries : allEntries {
+                let p = paletteInt[i]
                 let d = c &- p
                 // Weight alpha heavily so translucent edges stay smooth.
                 let distance = d[0] &* d[0] &* 2 &+ d[1] &* d[1] &* 3 &+ d[2] &* d[2] &+ d[3] &* d[3] &* 4
@@ -163,8 +170,9 @@ enum PNGQuantizer {
                     continue
                 }
                 let original = SIMD4<Float>(Float(pixels[o]), Float(pixels[o + 1]), Float(pixels[o + 2]), Float(pixels[o + 3]))
-                let wanted = (original + current[x + 1] * dithering)
+                var wanted = (original + current[x + 1] * dithering)
                     .clamped(lowerBound: .zero, upperBound: SIMD4<Float>(repeating: 255))
+                if pixels[o + 3] == 255 { wanted[3] = 255 }   // dither color only; neighbors' alpha error stays out
                 let index = nearest(SIMD4<Int32>(wanted.rounded(.toNearestOrEven)))
                 indices[y * width + x] = UInt8(index)
                 let error = wanted - SIMD4<Float>(paletteInt[index])

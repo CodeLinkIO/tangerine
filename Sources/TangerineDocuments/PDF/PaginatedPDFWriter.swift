@@ -11,9 +11,10 @@ enum PaginatedPDFWriter {
     @discardableResult
     static func write(_ text: NSAttributedString, to url: URL, title: String) throws -> Int {
         let storage = NSTextStorage(attributedString: text)
+        let contentSize = CGSize(width: pageSize.width - margin * 2, height: pageSize.height - margin * 2)
+        fitImages(in: storage, to: CGSize(width: contentSize.width, height: contentSize.height - 24))
         let layoutManager = NSLayoutManager()
         storage.addLayoutManager(layoutManager)
-        let contentSize = CGSize(width: pageSize.width - margin * 2, height: pageSize.height - margin * 2)
 
         var containers: [NSTextContainer] = []
         while containers.count < maxPages {
@@ -53,5 +54,17 @@ enum PaginatedPDFWriter {
         }
         context.closePDF()
         return containers.count
+    }
+
+    /// Shrinks images larger than the text area (keeping their aspect ratio) so they print whole instead of
+    /// running off the page. `size` leaves room for the line's spacing.
+    private static func fitImages(in storage: NSTextStorage, to size: CGSize) {
+        storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            guard let cell = (value as? NSTextAttachment)?.attachmentCell as? NSTextAttachmentCell,
+                  let image = cell.image, image.size.width > 0, image.size.height > 0
+            else { return }
+            let scale = min(1, size.width / image.size.width, size.height / image.size.height)
+            if scale < 1 { image.size = NSSize(width: image.size.width * scale, height: image.size.height * scale) }
+        }
     }
 }

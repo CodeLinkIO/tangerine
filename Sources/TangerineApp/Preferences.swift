@@ -76,7 +76,7 @@ enum QualityPreset: String, CaseIterable, Codable, Identifiable {
 final class Preferences: ObservableObject {
     static let shared = Preferences()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     @Published var convertKey: ModifierKey { didSet { defaults.set(convertKey.rawValue, forKey: "convertKey") } }
     @Published var toolsKey: ModifierKey { didSet { defaults.set(toolsKey.rawValue, forKey: "toolsKey") } }
@@ -95,7 +95,9 @@ final class Preferences: ObservableObject {
         didSet { save(Dictionary(uniqueKeysWithValues: pinnedTargets.map { ($0.key.rawValue, $0.value) }), forKey: "pinnedTargets") }
     }
 
-    private init() {
+    /// `defaults` is injectable so tests can use their own suite.
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         convertKey = ModifierKey(rawValue: defaults.string(forKey: "convertKey") ?? "") ?? .shift
         toolsKey = ModifierKey(rawValue: defaults.string(forKey: "toolsKey") ?? "") ?? .command
         dragWheelEnabled = defaults.object(forKey: "dragWheelEnabled") as? Bool ?? true
@@ -123,6 +125,7 @@ final class Preferences: ObservableObject {
         return nil
     }
 
+    /// Open at login through `SMAppService`; it shows up in System Settings → General → Login Items.
     var launchAtLogin: Bool {
         get { SMAppService.mainApp.status == .enabled }
         set {
@@ -134,6 +137,9 @@ final class Preferences: ObservableObject {
             }
         }
     }
+
+    /// Registered, but the user switched Tangerine off in System Settings → Login Items.
+    var launchAtLoginNeedsApproval: Bool { SMAppService.mainApp.status == .requiresApproval }
 
     /// Wheel targets: pinned formats that are available, else the first available in catalog order.
     func wheelTargets(category: FormatCategory, available: [FileFormat]) -> [FileFormat] {

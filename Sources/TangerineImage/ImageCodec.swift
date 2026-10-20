@@ -12,7 +12,7 @@ public struct LoadedImage: @unchecked Sendable {
     public var properties: [CFString: Any]
     /// Physical resolution, used to size PDF pages.
     public var dpi: CGFloat
-    /// Number of frames (animated GIF/HEICS); only the first frame is decoded.
+    /// Number of frames or pages (animated GIF/HEICS, multi-page TIFF); only one is decoded, the first by default.
     public var frameCount: Int
 
     public var pixelSize: CGSize { CGSize(width: image.width, height: image.height) }
@@ -26,30 +26,60 @@ extension CGImage {
         default: true
         }
     }
+
+    /// The same pixels with the alpha channel marked unused, without copying. Only for images known to be opaque.
+    func droppingAlpha() -> CGImage {
+        let alpha: CGImageAlphaInfo
+        switch alphaInfo {
+        case .premultipliedLast, .last: alpha = .noneSkipLast
+        case .premultipliedFirst, .first: alpha = .noneSkipFirst
+        default: return self
+        }
+        let info = CGBitmapInfo(rawValue: bitmapInfo.rawValue & ~CGBitmapInfo.alphaInfoMask.rawValue | alpha.rawValue)
+        guard let space = colorSpace, let provider = dataProvider,
+              let opaque = CGImage(width: width, height: height, bitsPerComponent: bitsPerComponent, bitsPerPixel: bitsPerPixel,
+                                   bytesPerRow: bytesPerRow, space: space, bitmapInfo: info, provider: provider,
+                                   decode: decode, shouldInterpolate: shouldInterpolate, intent: renderingIntent)
+        else { return self }
+        return opaque
+    }
 }
 
 public enum ImageCodec {
     // MARK: Reading
 
-    /// Decodes the first frame of `url`, applying EXIF orientation. `maxPixelSize` downsamples on decode.
-    public static func load(_ url: URL, maxPixelSize: Int? = nil) throws -> LoadedImage {
+    /// Largest image decoded or rendered (~200 megapixels, e.g. 16000×12500). Bigger files are mostly
+    /// decompression bombs: a 1 MB PNG can declare gigabytes of pixels, and compression needs several copies.
+    public static let maxPixelCount = 200_000_000
+
+    /// Throws a readable error when `width`×`height` is over `maxPixelCount`. `name` is the file, if there is one.
+    public static func checkPixelBudget(width: Int, height: Int, name: String? = nil) throws {
+        guard Double(width) * Double(height) > Double(maxPixelCount) else { return }
+        throw ConversionError.failed("\(name.map { "“\($0)”" } ?? "The image") is too large (\(width) × \(height) px). "
+            + "Images up to \(maxPixelCount / 1_000_000) megapixels are supported.")
+    }
+
+    /// Decodes one frame of `url` (the first by default), applying EXIF orientation. `maxPixelSize` downsamples on decode.
+    public static func load(_ url: URL, maxPixelSize: Int? = nil, frame index: Int = 0) throws -> LoadedImage {
         if FileFormat.detect(url) == .svg { return try loadVector(url, maxPixelSize: maxPixelSize) }
 
         guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
-              CGImageSourceGetCount(source) > 0
+              CGImageSourceGetCount(source) > index
         else { throw ConversionError.unreadable(url) }
 
-        var properties = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
+        var properties = (CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]) ?? [:]
         let width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
         let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
+        // Checked from the header, before anything is decoded.
+        try checkPixelBudget(width: width, height: height, name: url.lastPathComponent)
         let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
         let longest = max(width, height)
         let needsResize = maxPixelSize.map { $0 < longest } ?? false
 
-        let image: CGImage?
+        var image: CGImage?
         if (orientation == 1 && !needsResize) || longest == 0 {
             // Full-fidelity decode keeps 16-bit/HDR sources intact.
-            image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+            image = CGImageSourceCreateImageAtIndex(source, index, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         } else {
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -57,9 +87,15 @@ public enum ImageCodec {
                 kCGImageSourceThumbnailMaxPixelSize: needsResize ? maxPixelSize! : longest,
                 kCGImageSourceShouldCacheImmediately: true,
             ]
-            image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            image = CGImageSourceCreateThumbnailAtIndex(source, index, options as CFDictionary)
+            // Thumbnails are always RGBA (HEIC photos would look transparent); a lazy, undecoded image tells the truth.
+            if let thumbnail = image, thumbnail.hasAlpha,
+               let original = CGImageSourceCreateImageAtIndex(source, index, nil), !original.hasAlpha {
+                image = thumbnail.droppingAlpha()
+            }
         }
         guard let image else { throw ConversionError.unreadable(url) }
+        try checkPixelBudget(width: image.width, height: image.height, name: url.lastPathComponent)
 
         let dpi = (properties[kCGImagePropertyDPIWidth] as? Double).map { CGFloat($0) } ?? 72
         properties = normalized(properties)
@@ -67,17 +103,23 @@ public enum ImageCodec {
                            frameCount: CGImageSourceGetCount(source))
     }
 
+    /// Longest edge SVGs render at unless a size is requested (plenty for print, ~256 MB at most).
+    static let maxVectorPixelSize: CGFloat = 8192
+
     /// SVG and other vector inputs rendered through AppKit at their natural size (or `maxPixelSize`).
     private static func loadVector(_ url: URL, maxPixelSize: Int?) throws -> LoadedImage {
         guard let nsImage = NSImage(contentsOf: url), nsImage.size.width > 0, nsImage.size.height > 0 else {
             throw ConversionError.unreadable(url)
         }
         var size = nsImage.size
-        // Render small vector art at 2x so it stays crisp, or fit the requested size.
+        // Render small vector art at 2x so it stays crisp, large art at its natural size, or fit the requested size.
+        // The declared size is untrusted (a tiny file can claim 20000×20000), so always stay within the pixel budget.
         let longest = max(size.width, size.height)
-        let target = CGFloat(maxPixelSize ?? Int(max(longest * 2, 1024).rounded()))
-        let scale = target / longest
-        size = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+        let target = maxPixelSize.map { CGFloat($0) } ?? min(longest < 2048 ? max(longest * 2, 1024) : longest, maxVectorPixelSize)
+        var scale = target / longest
+        let area = size.width * size.height * scale * scale
+        if area > CGFloat(maxPixelCount) { scale *= (CGFloat(maxPixelCount) / area).squareRoot() }
+        size = CGSize(width: max(1, (size.width * scale).rounded()), height: max(1, (size.height * scale).rounded()))
         guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
                                       bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
@@ -176,7 +218,13 @@ public enum ImageCodec {
     public static func write(_ image: CGImage, as format: FileFormat, to url: URL, options: WriteOptions) async throws {
         switch format {
         case .webp:
-            try await writeWebP(image, to: url, quality: options.quality)
+            do {
+                try await writeWebP(image, to: url, quality: options.quality)
+            } catch {
+                // cwebp/ffmpeg may leave an empty or partial file behind.
+                try? FileManager.default.removeItem(at: url)
+                throw error
+            }
         case .pdf:
             try writePDF([(image, options.dpi)], to: url)
         default:
@@ -275,7 +323,8 @@ public enum ImageCodec {
 
     /// Square, padded frames for icon containers.
     static func iconFrames(_ image: CGImage, sizes: [Int]) -> [CGImage] {
-        let square = padded(toSquare: image, background: nil)
+        // Shrink before padding: a 20000×10 panorama would otherwise need a 20000×20000 canvas.
+        let square = padded(toSquare: resized(image, longestEdge: sizes.max() ?? 1024), background: nil)
         return sizes.map { resized(square, longestEdge: $0, allowUpscale: true) }
     }
 

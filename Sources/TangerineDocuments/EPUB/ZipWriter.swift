@@ -1,5 +1,6 @@
 import Compression
 import Foundation
+import TangerineCore
 
 /// Minimal ZIP archive writer (stored or deflated entries, no ZIP64), enough for EPUB packages.
 struct ZipWriter {
@@ -12,11 +13,15 @@ struct ZipWriter {
     init(date: Date = Date()) {
         let c = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
         dosTime = UInt16((c.hour ?? 0) << 11 | (c.minute ?? 0) << 5 | (c.second ?? 0) / 2)
-        dosDate = UInt16(max(0, (c.year ?? 1980) - 1980) << 9 | (c.month ?? 1) << 5 | (c.day ?? 1))
+        // DOS dates span 1980...2107.
+        dosDate = UInt16(min(127, max(0, (c.year ?? 1980) - 1980)) << 9 | (c.month ?? 1) << 5 | (c.day ?? 1))
     }
 
+    /// Thrown instead of trapping when the archive outgrows the classic (non-ZIP64) format.
+    static let tooLarge = ConversionError.failed("The book is too large to package as an EPUB.")
+
     /// Adds a file. `compress: false` stores it verbatim (required for the EPUB `mimetype` entry).
-    mutating func add(_ path: String, _ contents: Data, compress: Bool = true) {
+    mutating func add(_ path: String, _ contents: Data, compress: Bool = true) throws {
         let name = Data(path.utf8)
         let crc = CRC32.checksum(contents)
         let deflated = compress ? Self.deflate(contents) : nil
@@ -24,7 +29,13 @@ struct ZipWriter {
         let method: UInt16 = deflated == nil ? 0 : 8
         let isASCII = path.utf8.allSatisfy { $0 < 0x80 }
         let flags: UInt16 = isASCII ? 0 : 0x0800 // bit 11: UTF-8 file name
-        let offset = UInt32(archive.count)
+        guard entryCount < UInt16.max,
+              let offset = UInt32(exactly: archive.count),
+              let compressedSize = UInt32(exactly: payload.count),
+              let size = UInt32(exactly: contents.count),
+              let nameLength = UInt16(exactly: name.count),
+              UInt32(exactly: archive.count + 30 + name.count + payload.count) != nil
+        else { throw Self.tooLarge }
 
         // Local file header.
         archive.appendLE(UInt32(0x0403_4B50))
@@ -34,9 +45,9 @@ struct ZipWriter {
         archive.appendLE(dosTime)
         archive.appendLE(dosDate)
         archive.appendLE(crc)
-        archive.appendLE(UInt32(payload.count))
-        archive.appendLE(UInt32(contents.count))
-        archive.appendLE(UInt16(name.count))
+        archive.appendLE(compressedSize)
+        archive.appendLE(size)
+        archive.appendLE(nameLength)
         archive.appendLE(UInt16(0))
         archive.append(name)
         archive.append(payload)
@@ -50,9 +61,9 @@ struct ZipWriter {
         centralDirectory.appendLE(dosTime)
         centralDirectory.appendLE(dosDate)
         centralDirectory.appendLE(crc)
-        centralDirectory.appendLE(UInt32(payload.count))
-        centralDirectory.appendLE(UInt32(contents.count))
-        centralDirectory.appendLE(UInt16(name.count))
+        centralDirectory.appendLE(compressedSize)
+        centralDirectory.appendLE(size)
+        centralDirectory.appendLE(nameLength)
         centralDirectory.appendLE(UInt16(0)) // extra
         centralDirectory.appendLE(UInt16(0)) // comment
         centralDirectory.appendLE(UInt16(0)) // disk
@@ -63,16 +74,19 @@ struct ZipWriter {
         entryCount += 1
     }
 
-    func finalize() -> Data {
+    func finalize() throws -> Data {
+        guard let directoryOffset = UInt32(exactly: archive.count),
+              let directorySize = UInt32(exactly: centralDirectory.count),
+              UInt32(exactly: archive.count + centralDirectory.count) != nil
+        else { throw Self.tooLarge }
         var out = archive
-        let directoryOffset = UInt32(out.count)
         out.append(centralDirectory)
         out.appendLE(UInt32(0x0605_4B50))
         out.appendLE(UInt16(0))
         out.appendLE(UInt16(0))
         out.appendLE(entryCount)
         out.appendLE(entryCount)
-        out.appendLE(UInt32(centralDirectory.count))
+        out.appendLE(directorySize)
         out.appendLE(directoryOffset)
         out.appendLE(UInt16(0))
         return out

@@ -30,13 +30,15 @@ enum FFmpegRunner {
                     if state.isCancelled {
                         continuation.resume(throwing: ConversionError.cancelled)
                     } else if proc.terminationStatus != 0 {
-                        continuation.resume(throwing: ConversionError.failed("ffmpeg: \(state.errorSummary)"))
+                        continuation.resume(throwing: ConversionError.failed(state.errorSummary))
                     } else {
                         continuation.resume()
                     }
                 }
                 do {
                     try process.run()
+                    // Cancelled before ffmpeg started: the cancel handler found nothing to stop.
+                    if state.isCancelled { process.terminate() }
                 } catch {
                     continuation.resume(throwing: ConversionError.failed("Couldn't start ffmpeg: \(error.localizedDescription)"))
                 }
@@ -65,13 +67,29 @@ enum FFmpegRunner {
 
         func cancel() { lock.lock(); cancelled = true; lock.unlock() }
 
-        /// Last meaningful stderr lines, which is where ffmpeg puts the actual error.
+        /// A readable reason: known failures get a plain sentence, anything else the last meaningful stderr lines
+        /// (where ffmpeg puts the actual error) without log prefixes or file paths.
         var errorSummary: String {
             lock.lock(); defer { lock.unlock() }
-            let lines = log.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty && !$0.hasPrefix("Stream #") && !$0.hasPrefix("Input #") && !$0.hasPrefix("Output #") }
+            if log.contains("matches no streams") || log.contains("does not contain any stream") {
+                // ffmpeg 8 says "Failed to set value '0:a:0' for option 'map'"; older versions "Stream map '0:a:0'".
+                let audio = log.range(of: #"(Stream map|Failed to set value) '0:a"#, options: .regularExpression) != nil
+                return audio ? "This file has no audio." : "This file has no video."
+            }
+            if log.contains("Invalid data found when processing input") || log.contains("moov atom not found")
+                || log.contains("Error opening input: End of file") {
+                return "This file is damaged or isn't a supported media file."
+            }
+            if log.contains("Permission denied") { return "Permission denied." }
+            if log.contains("No space left on device") { return "The disk is full." }
+            let redundant = ["Stream #", "Input #", "Output #", "frame=", "size=", "Conversion failed!",
+                             "Error opening input file ", "Error opening output file ", "Error parsing options for "]
+            let lines = log.split(separator: "\n")
+                .map { $0.replacingOccurrences(of: #"^\[[^\]]* @ 0x[0-9a-f]+\] *"#, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespaces) }
+                .filter { line in !line.isEmpty && !redundant.contains { line.hasPrefix($0) } }
             let tail = lines.suffix(2).joined(separator: " ")
-            return tail.isEmpty ? "conversion failed" : tail
+            return "ffmpeg: " + (tail.isEmpty ? "conversion failed" : tail)
         }
 
         func consumeLog(_ data: Data) {

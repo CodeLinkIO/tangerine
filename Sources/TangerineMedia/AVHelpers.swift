@@ -22,6 +22,8 @@ enum AVHelpers {
     /// Exports `asset` with an AVAssetExportSession preset, reporting progress and honoring cancellation.
     static func export(_ asset: AVAsset, preset: String, to url: URL, fileType: AVFileType,
                        timeRange: CMTimeRange? = nil, progress: @escaping @Sendable (Double) -> Void) async throws {
+        // Damaged files fail here with "This media may be damaged" instead of an export error code.
+        _ = try await asset.load(.tracks)
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else {
             throw ConversionError.failed("This file can't be exported with \(preset).")
         }
@@ -42,13 +44,14 @@ enum AVHelpers {
         }
         defer { poll.cancel() }
 
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                box.session.exportAsynchronously { continuation.resume() }
+        let started = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                if !box.start({ continuation.resume(returning: true) }) { continuation.resume(returning: false) }
             }
         } onCancel: {
-            box.session.cancelExport()
+            box.cancel()
         }
+        guard started else { throw ConversionError.cancelled }
 
         switch session.status {
         case .completed:
@@ -58,7 +61,7 @@ enum AVHelpers {
             throw ConversionError.cancelled
         default:
             removePartial(url)
-            throw ConversionError.failed(session.error?.localizedDescription ?? "Export failed.")
+            throw session.error.map(mediaError) ?? ConversionError.failed("Export failed.")
         }
     }
 
@@ -136,6 +139,9 @@ enum AVHelpers {
     /// Native GIF fallback when ffmpeg is missing: samples frames with AVAssetImageGenerator.
     static func writeGIF(from asset: AVAsset, to url: URL, fps: Int, width: Int,
                          progress: @escaping @Sendable (Double) -> Void) async throws {
+        guard try await !asset.loadTracks(withMediaType: .video).isEmpty else {
+            throw ConversionError.failed("This file has no video.")
+        }
         let duration = min(try await asset.load(.duration).seconds, MediaFormats.gifMaxSeconds)
         guard duration > 0 else { throw ConversionError.failed("This video has no frames.") }
         let fps = max(1, min(fps, 30))
@@ -156,12 +162,17 @@ enum AVHelpers {
         CGImageDestinationSetProperties(destination, fileProperties)
         let frameProperties = [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1.0 / Double(fps)]] as CFDictionary
 
-        for index in 0..<frameCount {
-            try Task.checkCancellation()
-            let time = CMTime(seconds: Double(index) / Double(fps), preferredTimescale: 600)
-            let image = try await generator.image(at: time).image
-            CGImageDestinationAddImage(destination, image, frameProperties)
-            progress(Double(index + 1) / Double(frameCount))
+        do {
+            for index in 0..<frameCount {
+                if Task.isCancelled { throw ConversionError.cancelled }
+                let time = CMTime(seconds: Double(index) / Double(fps), preferredTimescale: 600)
+                let image = try await generator.image(at: time).image
+                CGImageDestinationAddImage(destination, image, frameProperties)
+                progress(Double(index + 1) / Double(frameCount))
+            }
+        } catch {
+            removePartial(url)
+            throw mediaError(error)
         }
         guard CGImageDestinationFinalize(destination) else {
             removePartial(url)
@@ -170,9 +181,31 @@ enum AVHelpers {
     }
 
     /// Lets the non-Sendable session cross into the cancellation handler and polling task.
+    ///
+    /// Also orders start and cancel: calling `exportAsynchronously` after `cancelExport` raises an
+    /// Objective-C exception (crashing the app), which happens when a job is cancelled just before its export starts.
     private final class SessionBox: @unchecked Sendable {
         let session: AVAssetExportSession
+        private let lock = NSLock()
+        private var started = false
+        private var cancelled = false
+
         init(_ session: AVAssetExportSession) { self.session = session }
+
+        /// Starts the export unless it was already cancelled; returns whether it started.
+        func start(_ completion: @escaping @Sendable () -> Void) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard !cancelled else { return false }
+            started = true
+            session.exportAsynchronously(completionHandler: completion)
+            return true
+        }
+
+        func cancel() {
+            lock.lock(); defer { lock.unlock() }
+            cancelled = true
+            if started { session.cancelExport() }
+        }
     }
 
     /// Moves sample buffers from a reader to a writer on a background queue.

@@ -87,6 +87,7 @@ enum MarkdownInline {
         var tokens: [Token] = []
         var buffer = ""
         var i = 0
+        var links = LinkScan(budget: chars.count * 4 + 1_024)
 
         func flush() {
             if !buffer.isEmpty {
@@ -128,12 +129,16 @@ enum MarkdownInline {
                 }
 
             case "!" where allowLinks && i + 1 < chars.count && chars[i + 1] == "[":
-                if let link = parseLink(chars, at: i + 1) {
+                if let link = parseLink(chars, at: i + 1, scan: &links) {
                     flush()
-                    var attributes = [Attribute(name: "src", value: link.destination),
-                                      Attribute(name: "alt", value: plainText(parse(link.label, allowLinks: false)))]
-                    if let title = link.title { attributes.append(Attribute(name: "title", value: title)) }
-                    tokens.append(.node(.void("img", attributes: attributes)))
+                    let alt = plainText(parse(link.label, allowLinks: false))
+                    if URLSafety.isSafeImage(link.destination) {
+                        var attributes = [Attribute(name: "src", value: link.destination), Attribute(name: "alt", value: alt)]
+                        if let title = link.title { attributes.append(Attribute(name: "title", value: title)) }
+                        tokens.append(.node(.void("img", attributes: attributes)))
+                    } else {
+                        tokens.append(.node(.text(alt)))
+                    }
                     i = link.end
                 } else {
                     buffer.append(c)
@@ -141,11 +146,17 @@ enum MarkdownInline {
                 }
 
             case "[" where allowLinks:
-                if let link = parseLink(chars, at: i) {
+                if let link = parseLink(chars, at: i, scan: &links) {
                     flush()
-                    var attributes = [Attribute(name: "href", value: link.destination)]
-                    if let title = link.title { attributes.append(Attribute(name: "title", value: title)) }
-                    tokens.append(.node(.element("a", attributes: attributes, children: parse(link.label, allowLinks: false))))
+                    let label = parse(link.label, allowLinks: false)
+                    if URLSafety.isSafeLink(link.destination) {
+                        var attributes = [Attribute(name: "href", value: link.destination)]
+                        if let title = link.title { attributes.append(Attribute(name: "title", value: title)) }
+                        tokens.append(.node(.element("a", attributes: attributes, children: label)))
+                    } else {
+                        // javascript:, data: and other schemes stay as plain text.
+                        tokens.append(contentsOf: label.map(Token.node))
+                    }
                     i = link.end
                 } else {
                     buffer.append(c)
@@ -219,10 +230,15 @@ enum MarkdownInline {
         return resolveEmphasis(tokens)
     }
 
+    /// Deeper emphasis is left as literal text so rendering can't exhaust the stack.
+    static let maxNesting = 32
+
     /// Pairs delimiter runs into <em>, <strong> and <del>, innermost first.
     private static func resolveEmphasis(_ input: [Token]) -> [Node] {
         var tokens = input
         var closerIndex = 0
+        // Per delimiter character, no usable opener lies below this index (so unmatched closers stay linear).
+        var openersBottom: [Character: Int] = [:]
         while closerIndex < tokens.count {
             guard case let .delimiter(closer) = tokens[closerIndex], closer.canClose, closer.count > 0 else {
                 closerIndex += 1
@@ -230,7 +246,7 @@ enum MarkdownInline {
             }
             var openerIndex: Int?
             var j = closerIndex - 1
-            while j >= 0 {
+            while j >= openersBottom[closer.character, default: 0] {
                 if case let .delimiter(opener) = tokens[j], opener.character == closer.character,
                    opener.canOpen, opener.count > 0 {
                     if closer.character != "~" || (opener.count >= 2 && closer.count >= 2) {
@@ -241,6 +257,15 @@ enum MarkdownInline {
                 j -= 1
             }
             guard let openerIndex, case var .delimiter(opener) = tokens[openerIndex] else {
+                // A "~" closer with one tilde left can't match, but a later "~~" still might.
+                if closer.character != "~" || closer.count >= 2 { openersBottom[closer.character] = closerIndex }
+                closerIndex += 1
+                continue
+            }
+            let children = flatten(Array(tokens[(openerIndex + 1)..<closerIndex]))
+            guard nestingDepth(children, limit: maxNesting) < maxNesting else {
+                // Openers further down would wrap these same children, so they're too deep as well.
+                openersBottom[closer.character] = closerIndex
                 closerIndex += 1
                 continue
             }
@@ -256,15 +281,29 @@ enum MarkdownInline {
             }
             opener.count -= use
             closerCopy.count -= use
-            let children = flatten(Array(tokens[(openerIndex + 1)..<closerIndex]))
             tokens.replaceSubrange((openerIndex + 1)..<closerIndex,
                                    with: [.node(.element(tag, attributes: [], children: children))])
             tokens[openerIndex] = .delimiter(opener)
+            // Keep the bottoms pointing at the same tokens after the collapse.
+            let shift = closerIndex - (openerIndex + 2)
+            for (character, bottom) in openersBottom where bottom > openerIndex {
+                openersBottom[character] = bottom >= closerIndex ? bottom - shift : openerIndex + 1
+            }
             closerIndex = openerIndex + 2
             tokens[closerIndex] = .delimiter(closerCopy)
             // Re-examine the same closer if it still has delimiters left.
         }
         return mergeText(flatten(tokens))
+    }
+
+    /// How deeply elements nest in `nodes`, counting at most `limit` levels.
+    private static func nestingDepth(_ nodes: [Node], limit: Int) -> Int {
+        var deepest = 0
+        for case let .element(_, _, children) in nodes {
+            deepest = max(deepest, 1 + (limit > 1 ? nestingDepth(children, limit: limit - 1) : 0))
+            if deepest >= limit { break }
+        }
+        return deepest
     }
 
     private static func flatten(_ tokens: [Token]) -> [Node] {
@@ -297,30 +336,22 @@ enum MarkdownInline {
         var end: Int
     }
 
+    /// Link-parsing state shared by every `[` in one run of text.
+    private struct LinkScan {
+        /// Memoized bracket matches (see `closingBracket`).
+        var brackets: [Int: Int] = [:]
+        /// Characters left for scanning destinations and titles. Successful links consume what they scan, so
+        /// only text crafted to fail over and over (e.g. "[a](" repeated in one long word) runs out; its
+        /// remaining brackets then stay literal instead of taking quadratic time.
+        var budget: Int
+    }
+
     /// Parses `[label](destination "title")` starting at the opening bracket.
-    private static func parseLink(_ chars: [Character], at start: Int) -> ParsedLink? {
-        guard chars[start] == "[" else { return nil }
-        var depth = 0
-        var i = start
-        var close: Int?
-        while i < chars.count {
-            let c = chars[i]
-            if c == "\\" { i += 2; continue }
-            if c == "`" {
-                let run = runLength(chars, at: i, of: "`")
-                if let end = findBacktickRun(chars, from: i + run, length: run) { i = end + run; continue }
-                i += run
-                continue
-            }
-            if c == "[" { depth += 1 }
-            if c == "]" {
-                depth -= 1
-                if depth == 0 { close = i; break }
-            }
-            i += 1
-        }
-        guard let close, close + 1 < chars.count, chars[close + 1] == "(" else { return nil }
+    private static func parseLink(_ chars: [Character], at start: Int, scan: inout LinkScan) -> ParsedLink? {
+        guard scan.budget > 0, chars[start] == "[", let close = closingBracket(chars, from: start, memo: &scan.brackets),
+              close + 1 < chars.count, chars[close + 1] == "(" else { return nil }
         var j = close + 2
+        defer { scan.budget -= j - close }
         while j < chars.count, chars[j] == " " || chars[j] == "\n" { j += 1 }
         var destination = ""
         if j < chars.count, chars[j] == "<" {
@@ -370,6 +401,33 @@ enum MarkdownInline {
         return ParsedLink(label: String(chars[(start + 1)..<close]), destination: destination, title: title, end: j + 1)
     }
 
+    /// The "]" matching the "[" at `start`, skipping escapes and code spans. Every bracket the scan passes is
+    /// matched too and memoized (-1 when unmatched), so a paragraph full of unclosed brackets is scanned once
+    /// instead of once per bracket. A later scan from a memoized "[" would see exactly the same characters.
+    private static func closingBracket(_ chars: [Character], from start: Int, memo: inout [Int: Int]) -> Int? {
+        if let known = memo[start] { return known < 0 ? nil : known }
+        var open: [Int] = []
+        var i = start
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\" { i += 2; continue }
+            if c == "`" {
+                let run = runLength(chars, at: i, of: "`")
+                if let end = findBacktickRun(chars, from: i + run, length: run) { i = end + run; continue }
+                i += run
+                continue
+            }
+            if c == "[" { open.append(i) }
+            if c == "]", let opener = open.popLast() {
+                memo[opener] = i
+                if open.isEmpty { return i }
+            }
+            i += 1
+        }
+        for opener in open { memo[opener] = -1 }
+        return nil
+    }
+
     private static func parseAutolink(_ chars: [Character], at start: Int) -> (String, Int)? {
         var j = start + 1
         var url = ""
@@ -395,10 +453,11 @@ enum MarkdownInline {
         var j = start
         while j < chars.count, !isWhitespace(chars[j]), chars[j] != "<" { j += 1 }
         // Trailing punctuation belongs to the sentence, not the URL.
+        var unmatchedClosers = chars[start..<j].reduce(0) { $0 + ($1 == ")" ? 1 : $1 == "(" ? -1 : 0) }
         while j > start, ".,;:!?'\")]*_~".contains(chars[j - 1]) {
             if chars[j - 1] == ")" {
-                let slice = chars[start..<j]
-                if slice.filter({ $0 == "(" }).count >= slice.filter({ $0 == ")" }).count { break }
+                if unmatchedClosers <= 0 { break }
+                unmatchedClosers -= 1
             }
             j -= 1
         }

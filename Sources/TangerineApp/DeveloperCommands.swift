@@ -1,10 +1,12 @@
 import AppKit
 import QuickLookThumbnailing
+import ServiceManagement
 import TangerineKit
 
 /// Hidden command-line flags:
 ///   --render-iconset <dir>                 writes AppIcon PNGs for iconutil
 ///   --render-wheel <png> <file> [tools] [dark] [highlight N]   snapshots the wheel for a file
+///   --login-item status|on|off             reads or changes Open at Login (used by scripts/install.sh)
 @MainActor
 enum DeveloperCommands {
     static func run(_ arguments: [String]) -> Bool {
@@ -19,8 +21,22 @@ enum DeveloperCommands {
             renderWheel(to: URL(fileURLWithPath: arguments[2]), file: URL(fileURLWithPath: arguments[3]),
                         mode: rest.contains("tools") ? .tools : .convert, dark: rest.contains("dark"), highlight: highlight, rest: rest)
             return true
+        case "--login-item":
+            if arguments[2] == "on" || arguments[2] == "off" { Preferences.shared.launchAtLogin = arguments[2] == "on" }
+            print(loginItemStatus())
+            return true
         default:
             return false
+        }
+    }
+
+    private static func loginItemStatus() -> String {
+        switch SMAppService.mainApp.status {
+        case .enabled: "enabled"
+        case .requiresApproval: "requires approval (System Settings → General → Login Items)"
+        case .notRegistered: "off"
+        case .notFound: "not found"
+        @unknown default: "unknown"
         }
     }
 
