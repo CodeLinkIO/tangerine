@@ -64,6 +64,9 @@ struct ImageConversionBackend: ConversionBackend {
         context.progress(0.5)
         if to == .txt {
             let text = try TextRecognition.recognize(loaded.image)
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ConversionError.failed("No text found in “\(input.lastPathComponent)”.")
+            }
             try text.write(to: destination, atomically: true, encoding: .utf8)
             return
         }
@@ -120,7 +123,8 @@ struct ImageToolBackend: ToolBackend {
         guard ImageEngine.readableFormats.contains(format), Self.tools.contains(tool) else { return false }
         switch tool {
         case .removeBackground: return RecipeRenderer.canRemoveBackground
-        case .compress: return format != .gif && format != .svg && format != .ico && format != .icns
+        // BMP has no compression to apply; converting it to PNG or JPG is the way to make it smaller.
+        case .compress: return ![.gif, .svg, .ico, .icns, .bmp].contains(format)
         default: return true
         }
     }
@@ -327,7 +331,7 @@ enum OpaqueBounds {
     }
 }
 
-/// "Compress" keeps the format family and reports when the file can't get smaller.
+/// "Compress" keeps the format (except for formats that can't be written) and reports when the file can't get smaller.
 enum ImageCompressor {
     static func compress(_ input: URL, format: FileFormat, output: OutputPlan, options: ConversionOptions) async throws -> ToolOutput {
         let loaded = try ImageCodec.load(input)
@@ -354,9 +358,16 @@ enum ImageCompressor {
                 try await ImageCodec.write(loaded.image, as: .jpg, to: destination,
                                            options: .init(quality: 0.8, properties: properties, dpi: loaded.dpi))
             }
+        case .tiff:
+            // Lossless: TIFFs are often uncompressed scans, where LZW alone saves a lot.
+            destination = output.file(extension: format.fileExtension, suffix: "compressed")
+            try writeLZWTIFF(input, firstPage: loaded, to: destination, stripMetadata: options.stripImageMetadata)
+        case .tga:
+            destination = output.file(extension: format.fileExtension, suffix: "compressed")
+            try await ImageCodec.write(loaded.image, as: .tga, to: destination, options: .init())
         default:
-            // PNG, TIFF, BMP, TGA: palette-quantized PNG. Dithering looks better but compresses worse,
-            // so fall back to a flat palette when it doesn't pay off.
+            // PNG: palette-quantized. Dithering looks better but compresses worse, so fall back to a flat palette
+            // when it doesn't pay off.
             destination = output.file(extension: "png", suffix: "compressed")
             var data = try PNGQuantizer.encode(loaded.image)
             if Int64(data.count) >= originalSize {
@@ -370,5 +381,31 @@ enum ImageCompressor {
             return ToolOutput(note: "Already optimized")
         }
         return ToolOutput(files: [destination])
+    }
+
+    /// Rewrites every page of a TIFF with LZW compression, keeping its pixels, bit depth and metadata.
+    private static func writeLZWTIFF(_ input: URL, firstPage: LoadedImage, to url: URL, stripMetadata: Bool) throws {
+        let pageCount = max(firstPage.frameCount, 1)
+        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, "public.tiff" as CFString, pageCount, nil) else {
+            throw ConversionError.failed("Couldn't create a TIFF encoder.")
+        }
+        for index in 0..<pageCount {
+            let page: LoadedImage
+            do { page = index == 0 ? firstPage : try ImageCodec.load(input, frame: index) } catch {
+                try? FileManager.default.removeItem(at: url)
+                throw error
+            }
+            var properties = stripMetadata ? [:] : page.properties
+            var tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+            tiff[kCGImagePropertyTIFFCompression] = 5   // LZW
+            properties[kCGImagePropertyTIFFDictionary] = tiff
+            properties[kCGImagePropertyDPIWidth] = page.dpi
+            properties[kCGImagePropertyDPIHeight] = page.dpi
+            CGImageDestinationAddImage(destination, page.image, properties as CFDictionary)
+        }
+        guard CGImageDestinationFinalize(destination) else {
+            try? FileManager.default.removeItem(at: url)
+            throw ConversionError.failed("Couldn't encode TIFF.")
+        }
     }
 }

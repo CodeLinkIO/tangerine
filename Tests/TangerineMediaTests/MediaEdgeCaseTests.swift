@@ -75,14 +75,14 @@ private func assertMonotonic(_ values: [Double], _ label: String, file: StaticSt
 
 /// Decodes `url` fully with ffmpeg; skips the check when ffmpeg is missing.
 private func assertDecodes(_ url: URL, file: StaticString = #filePath, line: UInt = #line) async throws {
-    guard let ffmpeg = FFmpeg.shared.path else { return }
+    guard let ffmpeg = FFmpeg.fixtures.path else { return }
     let result = try await Shell.execute(ffmpeg, ["-v", "error", "-i", url.path, "-f", "null", "-"])
     XCTAssertEqual(result.status, 0, "\(url.lastPathComponent) doesn't decode: \(result.stderr)", file: file, line: line)
 }
 
 /// ffmpeg's one-line description of the first audio stream, e.g. "Audio: mp3, 44100 Hz, stereo, fltp, 128 kb/s".
 private func ffmpegAudioStream(_ url: URL) async throws -> String {
-    guard let ffmpeg = FFmpeg.shared.path else { return "" }
+    guard let ffmpeg = FFmpeg.fixtures.path else { return "" }
     let result = try await Shell.execute(ffmpeg, ["-hide_banner", "-i", url.path])
     return result.stderr.split(separator: "\n").first { $0.contains("Audio:") }.map(String.init) ?? ""
 }
@@ -110,7 +110,7 @@ private let audioTargets = TargetCatalog.orderedTargets(for: .audio)
 private let portrait = CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 120, ty: 0)
 
 /// H.264 encoder for ffmpeg-built fixtures.
-private var fixtureH264: String { FFmpeg.shared.hasEncoder("libx264") ? "libx264" : "h264_videotoolbox" }
+private var fixtureH264: String { FFmpeg.fixtures.hasEncoder("libx264") ? "libx264" : "h264_videotoolbox" }
 
 // MARK: - Unusual content
 
@@ -793,7 +793,7 @@ final class MediaCancellationTests: XCTestCase {
     }
 
     func testCancellingFFmpegStopsTheProcess() async throws {
-        try XCTSkipUnless(FFmpeg.shared.hasEncoder("libx264"), "needs ffmpeg with libx264")
+        try XCTSkipUnless(FFmpeg.fixtures.hasEncoder("libx264"), "needs ffmpeg with libx264 for the fixture")
         let long = try await Fixtures.shared.longVideo()
         var reencode = ConversionOptions()
         reencode.videoResolution = .p480    // makes MKV re-encode instead of copying streams

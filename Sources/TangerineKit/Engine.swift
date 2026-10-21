@@ -111,9 +111,13 @@ public final class Engine: @unchecked Sendable {
 
     /// Targets every input supports (folders are expanded), in the first input's catalog order.
     /// Inputs already in the target format are skipped, so "PNG" is offered for a JPG + PNG selection.
+    /// Targets the content can't produce are left out: audio formats for a video without sound, video formats
+    /// and GIF for a video-type file that only holds sound.
     public func targets(for inputs: [URL]) -> [FileFormat] {
-        let formats = Self.distinctFormats(expand(inputs, limit: Self.capabilitySampleSize))
+        let files = expand(inputs, limit: Self.capabilitySampleSize)
+        let formats = Self.distinctFormats(files)
         guard let first = formats.first else { return [] }
+        let missing = missingStreams(in: files)
         let supported = formats.map { Set(targets(from: $0)) }
         var candidates = TargetCatalog.orderedTargets(for: first.category)
         for format in formats.dropFirst() {
@@ -124,6 +128,8 @@ public final class Engine: @unchecked Sendable {
         return candidates.filter { target in
             formats.contains { $0 != target }
                 && zip(formats, supported).allSatisfy { format, targets in format == target || targets.contains(target) }
+                && !(missing.audio && target.category == .audio)
+                && !(missing.video && (target.category == .video || target == .gif))
         }
     }
 
@@ -135,6 +141,10 @@ public final class Engine: @unchecked Sendable {
         var ordered: [ToolID] = []
         for tool in ToolID.orderedTools(for: first.category) where !ordered.contains(tool) {
             switch tool {
+            case .mute:
+                // Only for clips with both picture and sound.
+                let missing = missingStreams(in: files)
+                if !missing.audio, !missing.video, formats.allSatisfy({ toolBackend(tool, $0) != nil }) { ordered.append(tool) }
             case .openEditor:
                 // The editor works on one still image at a time.
                 if files.count == 1, first.category == .image { ordered.append(tool) }
@@ -150,6 +160,17 @@ public final class Engine: @unchecked Sendable {
 
     private func toolBackend(_ tool: ToolID, _ format: FileFormat) -> (any ToolBackend)? {
         toolBackends.first { $0.supports(tool, format: format) }
+    }
+
+    /// Video files whose streams are read (in parallel, a few milliseconds each) when listing targets and tools.
+    /// The rest of a bigger selection is assumed to have both picture and sound, and fails clearly if not.
+    public static let streamCheckLimit = 20
+
+    /// Whether any video-type file in `files` lacks picture or sound.
+    private func missingStreams(in files: [URL]) -> (video: Bool, audio: Bool) {
+        let videos = Array(files.lazy.filter { FileFormat.detect($0)?.category == .video }.prefix(Self.streamCheckLimit))
+        let streams = MediaProbe.streams(of: videos).compactMap { $0 }
+        return (video: streams.contains { !$0.video }, audio: streams.contains { !$0.audio })
     }
 
     // MARK: Inputs

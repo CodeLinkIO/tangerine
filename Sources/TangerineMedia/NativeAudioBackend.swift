@@ -25,6 +25,12 @@ public struct NativeAudioBackend: ConversionBackend {
         }
         let out = output.file(extension: to.fileExtension)
         context.progress(0)
+        let fallback = FFmpegMediaBackend(ffmpeg: ffmpeg)
+        if MediaFormats.hasFFmpegOnlyContainer(input), fallback.supports(from: from, to: to) {
+            try await fallback.convert(input, to: to, writingTo: out, context: context)
+            context.progress(1)
+            return [out]
+        }
         do {
             if to == .m4r {
                 try await Self.makeRingtone(from: input, to: out, options: context.options, progress: context.progress)
@@ -36,7 +42,6 @@ public struct NativeAudioBackend: ConversionBackend {
             throw ConversionError.cancelled
         } catch {
             // Core Audio rejects some files it nominally supports (odd MP3 headers, AMR variants); ffmpeg is more lenient.
-            let fallback = FFmpegMediaBackend(ffmpeg: ffmpeg)
             guard fallback.supports(from: from, to: to) else { throw mediaError(error) }
             removePartial(out)
             try await fallback.convert(input, to: to, writingTo: out, context: context)

@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -171,6 +172,30 @@ final class AppLogicTests: XCTestCase {
         model.setTarget(.heic, for: try XCTUnwrap(model.items.last).id)
         model.add([try dummy("q/c.jpg")])
         XCTAssertEqual(model.items.last?.target, .heic, "new files default to the target chosen for their siblings")
+    }
+
+    func testConverterDropsTargetsTheFileCantMake() async throws {
+        // An MP4 holding only sound starts with the video targets, then loses them once its streams are read.
+        let wav = temp.url.appendingPathComponent("voice.wav")
+        let file = try AVAudioFile(forWriting: wav, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 44_100,
+                                                              AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16])
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 22_050))
+        buffer.frameLength = 22_050
+        try file.write(from: buffer)
+        let report = try await Engine.shared.convert([wav], to: .m4a)
+        let song = temp.url.appendingPathComponent("song.mp4")
+        try FileManager.default.moveItem(at: try XCTUnwrap(report.outputs.first), to: song)
+
+        let model = ConverterModel()
+        model.add([song])
+        XCTAssertEqual(model.items.first?.target, .mov, "known from the extension alone")
+        for _ in 0..<50 where model.items.first?.targets.contains(.mov) == true {
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let item = try XCTUnwrap(model.items.first)
+        XCTAssertFalse(item.targets.contains { $0.category == .video || $0 == .gif }, "\(item.targets)")
+        XCTAssertTrue(item.targets.contains(.m4a))
+        XCTAssertEqual(item.target, item.targets.first, "the default moves to a target that works")
     }
 
     func testSetTargetForAllRespectsSelectionAndSupport() throws {

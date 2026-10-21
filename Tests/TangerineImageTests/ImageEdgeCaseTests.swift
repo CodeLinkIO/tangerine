@@ -820,6 +820,64 @@ final class ImageEdgeCaseTests: XCTestCase {
         XCTAssertEqual(markers(image).red, .topRight, "rotated exactly once")
         XCTAssertNotNil(try properties(output)[kCGImagePropertyGPSDictionary], "compress keeps metadata unless stripping")
     }
+
+    func testCompressKeepsTIFFAndTGAFormats() async throws {
+        // An uncompressed two-page scan becomes an LZW TIFF with the same pixels, every page and the metadata.
+        let tiff = temp.file("scan.tif")
+        let destination = CGImageDestinationCreateWithURL(tiff as CFURL, "public.tiff" as CFString, 2, nil)!
+        CGImageDestinationAddImage(destination, markerImage(width: 600, height: 400), cameraMetadata as CFDictionary)
+        CGImageDestinationAddImage(destination, solid(width: 300, height: 200, red: 0, green: 0.5, blue: 1), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let small = try await runFile(.compress, tiff)
+        XCTAssertEqual(small.lastPathComponent, "scan compressed.tiff")
+        XCTAssertLessThan(small.fileSize, tiff.fileSize / 4)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(small as CFURL, nil))
+        XCTAssertEqual(CGImageSourceGetType(source) as String?, "public.tiff")
+        XCTAssertEqual(CGImageSourceGetCount(source), 2, "every page kept")
+        let info = try properties(small)
+        XCTAssertEqual((info[kCGImagePropertyTIFFDictionary] as? [CFString: Any])?[kCGImagePropertyTIFFCompression] as? Int, 5)
+        XCTAssertNotNil(info[kCGImagePropertyGPSDictionary], "metadata kept unless stripping")
+        let before = try ImageCodec.load(tiff).image, after = try ImageCodec.load(small).image
+        for (x, y) in [(3, 3), (596, 3), (300, 200), (10, 390)] {
+            XCTAssertTrue(pixel(before, x: x, y: y) == pixel(after, x: x, y: y), "lossless at \(x),\(y)")
+        }
+        XCTAssertEqual(try ImageCodec.load(small, frame: 1).pixelSize, CGSize(width: 300, height: 200))
+        let again = try await run(.compress, small)
+        XCTAssertEqual(again.note, "Already optimized")
+
+        var stripping = ConversionOptions()
+        stripping.stripImageMetadata = true
+        let clean = try await runFile(.compress, tiff, options: stripping)
+        XCTAssertNil(try properties(clean)[kCGImagePropertyGPSDictionary])
+
+        // An uncompressed TGA (game textures, renders) stays a TGA, run-length encoded.
+        let width = 64, height = 32
+        var tga = Data([0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, UInt8(width), 0, UInt8(height), 0, 24, 0x20])
+        for y in 0..<height {
+            for _ in 0..<width { tga.append(contentsOf: y < height / 2 ? [0, 0, 255] : [255, 0, 0]) }   // BGR
+        }
+        let texture = try temp.file("texture.tga").writing(tga)
+        let rle = try await runFile(.compress, texture)
+        XCTAssertEqual(rle.pathExtension, "tga")
+        XCTAssertLessThan(rle.fileSize, texture.fileSize / 4)
+        let decoded = try ImageCodec.load(rle).image
+        XCTAssertTrue(pixel(decoded, x: 5, y: 5) == (255, 0, 0, 255), "\(pixel(decoded, x: 5, y: 5))")
+        XCTAssertTrue(pixel(decoded, x: 5, y: 25) == (0, 0, 255, 255), "\(pixel(decoded, x: 5, y: 25))")
+
+        // BMP has no compression to apply, so Compress isn't offered; converting to PNG is the way.
+        XCTAssertFalse(tools.supports(.compress, format: .bmp))
+    }
+
+    func testImageWithoutTextFailsClearlyForTXT() async throws {
+        let blank = write(solid(width: 300, height: 120, red: 1, green: 1, blue: 1), "blank.png", type: "public.png")
+        do {
+            _ = try await backend.convert(blank, from: .png, to: .txt, output: OutputPlan(for: blank), context: ConversionContext())
+            XCTFail("expected “No text found”")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "No text found in “blank.png”.")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temp.file("blank.txt").path))
+    }
 }
 
 private extension URL {

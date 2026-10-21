@@ -202,18 +202,22 @@ final class PDFEdgeCaseTests: XCTestCase {
 
     // MARK: - Text extraction
 
-    func testBlankPDFToTextWritesEmptyFiles() async throws {
+    func testBlankPDFToTextFailsClearly() async throws {
         let pdf = dir.appendingPathComponent("blank.pdf")
         try Fixtures.pdf([.blank, .blank], at: pdf)
 
-        // No text layer and nothing for OCR: the outputs are empty rather than an error (see report).
-        let txt = try await convert(pdf, to: .txt)
-        XCTAssertEqual(try read(txt).trimmingCharacters(in: .whitespacesAndNewlines), "")
-        let md = try read(try await convert(pdf, to: .md))
-        XCTAssertEqual(md.replacingOccurrences(of: "---", with: "").trimmingCharacters(in: .whitespacesAndNewlines), "")
-        let epub = try await convert(pdf, to: .epub)
-        let (status, log) = try Fixtures.run("/usr/bin/unzip", ["-t", epub.path])
-        XCTAssertEqual(status, 0, log)
+        // No text layer and nothing for OCR: say so rather than save an empty document.
+        for target in DocumentBackend.pdfOutputs.sorted(by: { $0.rawValue < $1.rawValue }) {
+            let message = await expectFailure("\(target)") { _ = try await convert(pdf, to: target) }
+            XCTAssertEqual(message, "No text found in “blank.pdf”.", "\(target)")
+        }
+        XCTAssertEqual(Fixtures.listing(dir), ["blank.pdf"])
+
+        // One page with text is enough.
+        let mixed = dir.appendingPathComponent("mixed.pdf")
+        try Fixtures.pdf([.blank, .text(["Only page two"])], at: mixed)
+        let text = try read(try await convert(mixed, to: .txt))
+        XCTAssertTrue(text.contains("Only page two"), text)
     }
 
     func testSidewaysScanWithRotateFlagIsRecognized() async throws {

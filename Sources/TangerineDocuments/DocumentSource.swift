@@ -25,7 +25,12 @@ enum DocumentSource {
         case .html:
             return .html(try readText(url), baseURL: baseURL)
         case .pdf:
-            return .pdf(try PDFTextExtractor.extract(url, progress: context.progress))
+            let pages = try PDFTextExtractor.extract(url, progress: context.progress)
+            // Pictures or blank pages without any recognizable text would make an empty document.
+            guard pages.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+                throw ConversionError.failed("No text found in “\(url.lastPathComponent)”.")
+            }
+            return .pdf(pages)
         case .webarchive:
             // Read through the sanitizer rather than WebKit's archive loader, which fetches anything not archived.
             return .rich(try await importHTML(try WebArchive.html(url), baseURL: nil))

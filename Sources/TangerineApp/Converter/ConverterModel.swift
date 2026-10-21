@@ -16,7 +16,7 @@ final class ConverterModel: ObservableObject {
         let url: URL
         let format: FileFormat
         let size: Int64
-        let targets: [FileFormat]
+        var targets: [FileFormat]
         var target: FileFormat?
         var status: Status = .ready
     }
@@ -38,13 +38,37 @@ final class ConverterModel: ObservableObject {
     func add(_ urls: [URL]) {
         let engine = Engine.shared
         let known = Set(items.map(\.url))
+        var videos: [(Item.ID, URL)] = []
         for url in engine.expand(urls) where !known.contains(url) {
             guard let format = FileFormat.detect(url) else { continue }
             let targets = engine.targets(from: format)
             // Default to the format chosen for siblings of the same kind, else the first option.
             let sibling = items.last { $0.format.category == format.category }?.target
             let target = sibling.flatMap { targets.contains($0) ? $0 : nil } ?? targets.first
-            items.append(Item(url: url, format: format, size: url.fileSize, targets: targets, target: target))
+            let item = Item(url: url, format: format, size: url.fileSize, targets: targets, target: target)
+            items.append(item)
+            if format.category == .video { videos.append((item.id, url)) }
+        }
+        checkStreams(videos)
+    }
+
+    /// A video's targets depend on its content (a clip without sound can't become MP3). Reading that takes a moment
+    /// per file, so items appear at once and drop what they can't produce right after.
+    private func checkStreams(_ videos: [(Item.ID, URL)]) {
+        guard !videos.isEmpty else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            for (id, url) in videos {
+                let targets = Engine.shared.targets(for: [url])
+                await self?.narrowTargets(of: id, to: targets)
+            }
+        }
+    }
+
+    private func narrowTargets(of id: Item.ID, to targets: [FileFormat]) {
+        guard let index = items.firstIndex(where: { $0.id == id }), items[index].targets != targets else { return }
+        items[index].targets = targets
+        if case .ready = items[index].status, let target = items[index].target, !targets.contains(target) {
+            items[index].target = targets.first
         }
     }
 

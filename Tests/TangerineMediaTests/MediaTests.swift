@@ -200,7 +200,7 @@ final class MediaToolTests: XCTestCase {
     }
 
     func testCompressRealisticVideoShrinks() async throws {
-        try XCTSkipUnless(FFmpeg.shared.hasEncoder("libx264"))
+        try XCTSkipUnless(FFmpeg.fixtures.hasEncoder("libx264"))
         let long = try await Fixtures.shared.longVideo()
         let result = try await run(.compress, long)
         let url = try XCTUnwrap(result.files.first, result.note ?? "no output")
@@ -245,7 +245,7 @@ final class FFmpegMediaTests: XCTestCase {
 
     /// Uses ffmpeg itself to verify containers AVFoundation can't open.
     private func assertDecodes(_ url: URL) async throws {
-        let result = try await Shell.execute(FFmpeg.shared.path!, ["-v", "error", "-i", url.path, "-f", "null", "-"])
+        let result = try await Shell.execute(FFmpeg.fixtures.path!, ["-v", "error", "-i", url.path, "-f", "null", "-"])
         XCTAssertEqual(result.status, 0, "\(url.lastPathComponent) failed to decode: \(result.stderr)")
     }
 
@@ -291,6 +291,18 @@ final class FFmpegMediaTests: XCTestCase {
         XCTAssertEqual(backInfo.audioTracks, 1)
     }
 
+    func testMisnamedVorbisGoesToFFmpeg() async throws {
+        // Core Audio accepts an Ogg Vorbis file named .mp3 and writes a few milliseconds of noise.
+        let vorbis = FFmpeg.fixtures.hasEncoder("libvorbis") ? ["-c:a", "libvorbis"] : ["-c:a", "vorbis", "-strict", "-2", "-ac", "2"]
+        let ogg = try await Fixtures.shared.ffmpegFixture("vorbis.ogg", ["-f", "lavfi", "-i", "sine=frequency=440:duration=1.5"] + vorbis)
+        let disguised = try await Fixtures.shared.outputFolder().appendingPathComponent("vorbis.mp3")
+        try FileManager.default.copyItem(at: ogg, to: disguised)
+        let outputs = try await NativeAudioBackend().convert(disguised, from: .mp3, to: .wav,
+                                                             output: OutputPlan(for: disguised), context: ConversionContext())
+        let info = try await MediaInfo.read(try XCTUnwrap(outputs.first))
+        XCTAssertEqual(info.duration, 1.5, accuracy: 0.1)
+    }
+
     func testNativeAudioFallsBackToFFmpeg() async throws {
         // An Ogg file with an .mp3 name: Core Audio refuses it, ffmpeg probes the real contents.
         let ogg = try await convert(try await Fixtures.shared.wav(), to: .ogg)
@@ -304,7 +316,7 @@ final class FFmpegMediaTests: XCTestCase {
     }
 
     func testCancellationStopsFFmpeg() async throws {
-        try XCTSkipUnless(FFmpeg.shared.hasEncoder("libvpx-vp9") && FFmpeg.shared.hasEncoder("libx264"))
+        try XCTSkipUnless(FFmpeg.shared.hasEncoder("libvpx-vp9") && FFmpeg.fixtures.hasEncoder("libx264"))
         let long = try await Fixtures.shared.longVideo()
         let folder = try await Fixtures.shared.outputFolder()
         let task = Task {

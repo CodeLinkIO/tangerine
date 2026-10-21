@@ -114,10 +114,10 @@ actor Fixtures {
 
     /// Builds a fixture with ffmpeg (lavfi sources); skips the test when ffmpeg isn't installed.
     func ffmpegFixture(_ name: String, _ arguments: [String]) async throws -> URL {
-        try XCTSkipUnless(FFmpeg.shared.isAvailable, "ffmpeg not installed")
+        try XCTSkipUnless(FFmpeg.fixtures.isAvailable, "ffmpeg not installed")
         if let url = cache[name] { return url }
         let url = directory.appendingPathComponent(name)
-        try await FFmpeg.shared.run(arguments + [url.path])
+        try await FFmpeg.fixtures.run(arguments + [url.path])
         cache[name] = url
         return url
     }
@@ -140,7 +140,7 @@ actor Fixtures {
     func longVideo() async throws -> URL {
         if let url = cache["long.mp4"] { return url }
         let url = directory.appendingPathComponent("long.mp4")
-        try await FFmpeg.shared.run(["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-f", "lavfi",
+        try await FFmpeg.fixtures.run(["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-f", "lavfi",
                                      "-i", "sine=frequency=440", "-t", "20", "-c:v", "libx264", "-preset", "ultrafast",
                                      "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", url.path])
         cache["long.mp4"] = url
@@ -317,4 +317,11 @@ struct MediaInfo {
                          audioSubtype: subtype, videoSize: size, displaySize: display, videoSubtype: videoSubtype,
                          audioChannels: channels, audioSampleRate: rate)
     }
+}
+
+extension FFmpeg {
+    /// The ffmpeg that makes and checks test files. Set TANGERINE_FIXTURE_FFMPEG to a full build (Homebrew's)
+    /// to test a lighter one through TANGERINE_FFMPEG, such as the copy bundled in the app.
+    static let fixtures: FFmpeg = ProcessInfo.processInfo.environment["TANGERINE_FIXTURE_FFMPEG"]
+        .map { FFmpeg(path: $0) } ?? .shared
 }

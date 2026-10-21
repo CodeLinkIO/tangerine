@@ -26,11 +26,20 @@ final class SettingsWindowController: NSWindowController {
 
 private enum SettingsTab: String, CaseIterable {
     case general = "General", wheel = "Wheel", engines = "Engines"
+
+    /// Debug builds can open a tab directly with TANGERINE_DEMO_TAB=General|Wheel|Engines, for screenshots.
+    static var initial: SettingsTab {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["TANGERINE_DEMO_TAB"].flatMap(SettingsTab.init(rawValue:)) ?? .general
+        #else
+        .general
+        #endif
+    }
 }
 
 struct SettingsView: View {
     @ObservedObject var prefs: Preferences
-    @State private var tab: SettingsTab = .general
+    @State private var tab: SettingsTab = .initial
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -219,9 +228,11 @@ private struct EngineSettings: View {
                     status("Video and audio", ok: true, detail: "Built into macOS")
                     Hairline()
                     status("More video and audio formats", ok: ffmpeg.isAvailable,
-                           detail: ffmpeg.isAvailable ? "ffmpeg · MP3, OGG, MKV, WebM, AVI, WMV" : "Install ffmpeg to add MP3, OGG, MKV, WebM, AVI, WMV")
+                           detail: ffmpeg.isAvailable ? "\(source(ffmpeg.path, "ffmpeg")) · MP3, OGG, MKV, WebM, AVI, WMV"
+                                                      : "Install ffmpeg to add MP3, OGG, MKV, WebM, AVI, WMV")
                     Hairline()
-                    status("WebP", ok: WebPTools.canEncode, detail: WebPTools.canEncode ? "libwebp" : "Install webp to save WebP images")
+                    status("WebP", ok: WebPTools.canEncode,
+                           detail: WebPTools.canEncode ? source(WebPTools.cwebp, "libwebp") : "Install webp to save WebP images")
                 }
             }
             if !ffmpeg.isAvailable || !WebPTools.canEncode {
@@ -240,6 +251,11 @@ private struct EngineSettings: View {
             Text("\(FileFormat.allCases.reduce(0) { $0 + Engine.shared.targets(from: $1).count }) conversions available · all processing stays on this Mac")
                 .font(Theme.label(11.5, weight: .regular)).foregroundStyle(Theme.faint)
         }
+    }
+
+    /// "Included" for the engines bundled in Contents/Helpers, else the tool's name (a Homebrew copy).
+    private func source(_ path: String?, _ name: String) -> String {
+        path?.hasPrefix(Bundle.main.bundlePath + "/") == true ? "Included" : name
     }
 
     private func status(_ title: String, ok: Bool, detail: String) -> some View {

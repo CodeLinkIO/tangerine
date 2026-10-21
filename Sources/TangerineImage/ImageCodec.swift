@@ -255,6 +255,9 @@ public enum ImageCodec {
             // These containers can't carry EXIF/GPS; passing it can make ImageIO fail.
             properties = [kCGImageDestinationLossyCompressionQuality: options.quality]
         }
+        if format == .tga {
+            properties[kCGImagePropertyTGADictionary] = [kCGImagePropertyTGACompression: CGImagePropertyTGACompression.tgaCompressionRLE.rawValue]
+        }
         for frame in frames {
             CGImageDestinationAddImage(destination, frame, properties as CFDictionary)
         }

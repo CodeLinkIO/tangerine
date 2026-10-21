@@ -29,6 +29,15 @@ enum MediaFormats {
     static let ringtoneMaxSeconds: Double = 40
     /// Native GIF export stops after this many seconds to keep files reasonable.
     static let gifMaxSeconds: Double = 30
+
+    /// True when the first bytes show a container only ffmpeg reads (Ogg, Matroska/WebM, ASF), whatever the
+    /// extension says. Core Audio can accept such a file and write a few milliseconds of noise.
+    static func hasFFmpegOnlyContainer(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let head = [UInt8]((try? handle.read(upToCount: 4)) ?? Data())
+        return [Array("OggS".utf8), [0x1A, 0x45, 0xDF, 0xA3], [0x30, 0x26, 0xB2, 0x75]].contains(head)
+    }
 }
 
 /// Removes a partially written file, ignoring errors.
