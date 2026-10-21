@@ -136,6 +136,19 @@ if [[ -s "$IN/clip.mp4" ]]; then
     for input in clip.mkv clip.webm clip.avi clip.wmv; do
         [[ -s "$OUT/$input" ]] && convert_all "$OUT/$input" mp4
     done
+    # AV1, which the app reads but can't write: a full ffmpeg (Homebrew's) makes the test clips if it's there.
+    MAKER="$(command -v /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg | head -1 || true)"
+    if [[ -n "$MAKER" ]] && "$MAKER" -hide_banner -encoders 2>/dev/null | grep -q libsvtav1; then
+        for ext in mkv webm mp4; do
+            audio=libopus; [[ $ext == mp4 ]] && audio=aac
+            "$MAKER" -v error -i "$IN/clip.mp4" -c:v libsvtav1 -preset 12 -c:a $audio "$IN/av1.$ext" 2>/dev/null
+        done
+        convert_all "$IN/av1.mkv" mp4 gif m4a
+        convert_all "$IN/av1.webm" mp4 mov
+        convert_all "$IN/av1.mp4" mov gif
+    else
+        skip "AV1 video" "needs a full ffmpeg with libsvtav1 to make the test clip"
+    fi
 else
     skip "video" "no ffmpeg to make the test clip (swift test covers native video)"
 fi

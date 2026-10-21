@@ -125,6 +125,37 @@ final class MediaContentEdgeCaseTests: XCTestCase {
         XCTAssertEqual(contents(folder), [])
     }
 
+    func testAV1VideoInEveryContainer() async throws {
+        // AV1 is common in downloaded web video. Macs before M3 can't decode it in hardware, so ffmpeg reads it
+        // with dav1d: directly for MKV/WebM, and as AVVideoBackend's fallback for MP4.
+        let encoder = ["libsvtav1", "libaom-av1"].first(where: FFmpeg.fixtures.hasEncoder)
+        try XCTSkipUnless(encoder != nil, "no AV1 encoder to make the test files")
+        let video = ["-c:v", encoder!] + (encoder == "libsvtav1" ? ["-preset", "12"] : ["-cpu-used", "8"])
+        for (name, audio) in [("av1.mkv", "libopus"), ("av1.webm", "libopus"), ("av1.mp4", "aac")] {
+            let input = try await Fixtures.shared.ffmpegFixture(name, [
+                "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-f", "lavfi", "-i", "sine=frequency=440",
+                "-t", "1", "-pix_fmt", "yuv420p"] + video + ["-c:a", audio, "-shortest"])
+            let ffmpegOnly: [any ConversionBackend] = [FFmpegMediaBackend()]
+
+            let gif = try await engineConvert(input, to: .gif, backends: ffmpegOnly)
+            let frames = try gifFrames(gif)
+            XCTAssertGreaterThan(frames.count, 5, name)
+            XCTAssertEqual(frames.width, 320, name)
+            // Re-encoded to H.264, which every Mac plays.
+            let mov = try await engineConvert(input, to: .mov, backends: ffmpegOnly)
+            let info = try await MediaInfo.read(mov)
+            XCTAssertEqual(info.videoSubtype, kCMVideoCodecType_H264, name)
+            XCTAssertEqual(info.duration, 1, accuracy: 0.2, name)
+            if input.pathExtension != "mkv" {
+                try await assertDecodes(try await engineConvert(input, to: .mkv, backends: ffmpegOnly))
+            }
+            // And the way the app routes it, including audio extraction and Compress.
+            try await assertDecodes(try await engineConvert(input, to: .m4a))
+            let compressed = try await runTool(.compress, input)
+            XCTAssertTrue(compressed.files.count == 1 || compressed.note == "Already optimized", name)
+        }
+    }
+
     func testMuteAndConvertSilentVideo() async throws {
         let silent = try await Fixtures.shared.silentVideo()
         let mutedFiles = try await runTool(.mute, silent).files

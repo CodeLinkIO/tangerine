@@ -8,18 +8,43 @@ A native macOS menu-bar app inspired by [tangerineformac.com](https://tangerinef
 
 ## Install
 
-**[⬇ Download Tangerine.dmg](https://github.com/CodeLinkIO/tangerine/raw/main/Tangerine.dmg)**: it's the
-`Tangerine.dmg` at the top of this repo (about 6 MB). You need a Mac with Apple silicon (M1 or later) and
-macOS 13 Ventura or later. Everything is included; there's nothing else to install.
+You need a Mac with Apple silicon (M1 or later) and macOS 13 Ventura or later. Nothing else: ffmpeg and the
+WebP tools are inside the app, so there's no Homebrew or other setup.
+
+### Option 1: one command (recommended)
+
+Open **Terminal** (Applications → Utilities), paste this line and press Return:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/CodeLinkIO/tangerine/main/scripts/get.sh | bash
+```
+
+It downloads `Tangerine.dmg`, checks it, copies Tangerine to Applications and opens it. No password and no
+security warning. Run the same line again later to update. The script is
+[`scripts/get.sh`](scripts/get.sh) if you'd like to read it first.
+
+### Option 2: the disk image
+
+**[⬇ Download Tangerine.dmg](https://github.com/CodeLinkIO/tangerine/raw/main/Tangerine.dmg)** (about 6 MB),
+or use a copy someone sent you.
 
 1. Open `Tangerine.dmg` and drag **Tangerine** onto **Applications**.
 2. Open Tangerine from Applications. The app isn't notarized by Apple yet, so the first time macOS says it
    can't verify it. Click **Done**.
 3. Open **System Settings → Privacy & Security**, scroll down to *"Tangerine" was blocked…*, click
    **Open Anyway**, and confirm with your password. On macOS 13 and 14, right-click the app → **Open** also works.
-   This is only needed once. If you prefer Terminal: `xattr -dr com.apple.quarantine /Applications/Tangerine.app`.
-4. The welcome window shows a sample file to try the wheel on. *Open at login* is on by default; macOS confirms
-   it with a "Login Item Added" notice. Tangerine lives in the menu bar, not the Dock.
+   This is only needed once.
+4. If WebP, MP3 or video conversions then fail, run this once in Terminal:
+   `xattr -dr com.apple.quarantine /Applications/Tangerine.app`.
+
+Why the warning: browsers, AirDrop and chat apps mark downloaded files as quarantined, and macOS checks
+quarantined apps with Apple. Files downloaded by `curl` (Option 1) aren't marked. Signing with a paid Apple
+Developer ID and notarizing removes the warning for the disk image too (see [Build from source](#build-from-source)).
+
+### First launch
+
+The welcome window shows a sample file to try the wheel on. *Open at login* is on by default; macOS confirms
+it with a "Login Item Added" notice. Tangerine lives in the menu bar, not the Dock.
 
 **Permissions.** The first time you press ⌃⌥T, macOS asks whether Tangerine may control Finder (to read the
 selected files). Nothing else needs a permission.
@@ -34,7 +59,7 @@ selected files). Nothing else needs a permission.
 | **Images** | **Inputs:** JPG, PNG, HEIC, WebP, AVIF, TIFF, BMP, GIF, SVG, ICO, ICNS, PSD, TGA, JPEG 2000, JPEG XL, EXR, camera RAW.<br>**Outputs:** JPG, PNG, HEIC, WebP, AVIF, TIFF, GIF, PDF, BMP, ICO, ICNS, JP2, TGA, plus **TXT via OCR**.<br>Animated GIF → WebP or MP4. |
 | **Quick edits** (⌘ wheel) | Edit…, Compress (keeps the format: pngquant-style palette PNG, re-encoded JPG/HEIC/WebP, lossless LZW TIFF with every page, RLE TGA), Resize 50%, Fit 1080, Rotate (lossless for JPEG/HEIC/TIFF), Flip, Merge into PDF |
 | **Editor window** | Kept simple: crop (Free, Original, Square, 4:3, 3:2, 16:9), rotate, flip, resize (25/50/75%, 1080/2048 px, custom), then save as JPG/PNG/HEIC/WebP… with Small/Balanced/Best quality and a live size estimate. Undo/redo |
-| **Video** | MP4, MOV, M4V, 3GP natively; MKV, WebM, AVI, WMV, FLV, MPG and MTS via ffmpeg. Outputs any of these plus GIF and audio extraction. Compress (HEVC), Mute. A clip without sound isn't offered audio formats or Mute; an MP4 with only sound is offered audio formats only |
+| **Video** | MP4, MOV, M4V, 3GP natively; MKV, WebM, AVI, WMV, FLV, MPG and MTS via ffmpeg, including AV1 video. Outputs any of these plus GIF and audio extraction. Compress (HEVC), Mute. A clip without sound isn't offered audio formats or Mute; an MP4 with only sound is offered audio formats only |
 | **Audio** | MP3, M4A/AAC, ALAC, WAV, AIFF, FLAC, CAF, M4R ringtone, OGG, Opus, WMA |
 | **PDF** | → PNG/JPG/TIFF/HEIC (every page, 300 DPI); → TXT/MD/DOCX/RTF/HTML/EPUB with OCR for scans ("No text found" when there's nothing to read). Merge, split, compress |
 | **Documents** | DOCX, DOC, RTF, RTFD, ODT, HTML, TXT, Markdown, Web Archive ↔ each other, plus → PDF and EPUB |
@@ -63,7 +88,8 @@ scripts/install.sh --login        # build → /Applications/Tangerine.app, open 
 scripts/package.sh                # build → Tangerine.dmg, the download linked above
 ```
 
-The first build also builds the bundled engines (about 6 minutes; see below). Later builds reuse them.
+The first build also builds the bundled engines (about 6 minutes; see below). Later builds reuse them. It fetches
+Meson and Ninja (for dav1d) into `build/engines/tools`, so they don't need installing.
 
 | Script | Does |
 |---|---|
@@ -71,6 +97,7 @@ The first build also builds the bundled engines (about 6 minutes; see below). La
 | `scripts/build-app.sh` | Release build of `build/Tangerine.app`: the app, plus the `tangerine` CLI and the engines in `Contents/Helpers`, the icon, and a signature. `ENGINES=0` leaves the engines out (Homebrew's are used if present). |
 | `scripts/install.sh [--login]` | Builds, quits any running copy, replaces `/Applications/Tangerine.app` (only if it's this app), refreshes Launch Services and the Services menu, and opens it. |
 | `scripts/package.sh` | Builds and wraps the app in a compressed disk image with an Applications shortcut: `build/Tangerine-<version>.dmg`, copied to `Tangerine.dmg` here. Commit that file to update the download. |
+| `scripts/get.sh` | The one-line installer for users (see [Install](#install)): downloads the published `Tangerine.dmg` with curl, checks it and installs it. |
 | `scripts/smoke-test.sh [app]` | Checks the signature and the disk image, then runs 60+ real conversions with the engine inside the app. |
 
 **Open at login** uses `SMAppService`, so it appears in System Settings → General → Login Items.
@@ -89,18 +116,18 @@ SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=tang
 **Bundled engines.** `Contents/Helpers` holds a light ffmpeg (13 MB) and libwebp's cwebp and gif2webp, and the
 app uses them before any Homebrew copy.
 - ffmpeg is an **LGPL** build with only the containers, codecs and filters Tangerine uses. It encodes with Apple's
-  VideoToolbox and AudioToolbox, plus LAME (MP3), Vorbis, Opus and VP9. It has no network code, and leaves out
+  VideoToolbox and AudioToolbox, plus LAME (MP3), Vorbis, Opus and VP9, and decodes AV1 with dav1d. It has no network code, and leaves out
   playlist formats that can pull in other files.
 - Everything is static and arm64 for macOS 13 or later; only macOS's own libraries are linked.
 - The lists live in `scripts/build-engines.sh`. When adding a format to `MediaFormats`, add its demuxer, decoder,
   encoder or muxer there.
-- Not included: AV1 decoding (dav1d), so AV1 videos in MKV/WebM, or in MP4 on Macs before M3, can't be read.
+- AV1 video is read with dav1d, so it works on Macs without an AV1 hardware decoder (before M3).
 - Licenses and the exact source URLs are in `Tangerine.app/Contents/Resources/Licenses`.
 
 ## Testing
 
 ```bash
-swift test                               # 298 unit tests (~2 min), edge cases and security regressions included
+swift test                               # 299 unit tests (~2 min), edge cases and security regressions included
 swift test --filter TangerineImageTests  # one suite
 scripts/package.sh && scripts/smoke-test.sh   # the built app and Tangerine.dmg, end to end (~15 s)
 
