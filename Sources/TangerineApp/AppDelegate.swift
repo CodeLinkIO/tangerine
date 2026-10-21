@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     #if DEBUG
     /// Debug builds only: TANGERINE_DEMO=wheel|tools|converter|settings|welcome|editor|hud [TANGERINE_DEMO_FILE=a:b] [TANGERINE_DEMO_DARK=1]
-    /// opens UI without input events, for screenshots and manual checks.
+    /// [TANGERINE_DEMO_PETAL=n] opens UI without input events, for screenshots and manual checks.
     private func runDemoHooks() {
         let env = ProcessInfo.processInfo.environment
         guard let demo = env["TANGERINE_DEMO"] else { return }
@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let frame = NSScreen.main?.visibleFrame ?? .zero
                 WheelController.shared.show(files: files, mode: demo == "tools" ? .tools : .convert, interaction: .click,
                                             at: CGPoint(x: frame.midX, y: frame.midY))
+                if let petal = env["TANGERINE_DEMO_PETAL"].flatMap(Int.init) { WheelController.shared.highlight(petal) }
             case "converter": ConverterWindowController.shared.show(adding: files)
             case "settings": SettingsWindowController.shared.show()
             case "welcome": WelcomeWindowController.shared.show()

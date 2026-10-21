@@ -134,6 +134,10 @@ final class WheelController: NSObject, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
+    #if DEBUG
+    func highlight(_ index: Int) { wheel.highlight(index) }
+    #endif
+
     func hide() {
         hideWorkItem?.cancel()
         guard panel.isVisible else { return }

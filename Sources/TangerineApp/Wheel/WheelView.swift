@@ -261,6 +261,11 @@ final class WheelView: NSView {
 
     func clearSelection() { highlighted = nil }
 
+    #if DEBUG
+    /// Highlights a petal without pointer events, for screenshots (TANGERINE_DEMO_PETAL).
+    func highlight(_ index: Int) { highlighted = items.indices.contains(index) ? index : nil }
+    #endif
+
     // MARK: Drag destination (drag mode)
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { dragUpdate(sender) }
